@@ -37,7 +37,40 @@ func LoadConfig() (Config, error) {
 		return conf, fmt.Errorf("failed to decode config file %s: %w", configFile, err)
 	}
 
+	err = conf.validate()
+	if err != nil {
+		return conf, fmt.Errorf("invalid config file: %w", err)
+	}
+
 	return conf, nil
+}
+
+func (c *Config) validate() error {
+	type requiredField struct {
+		key   string
+		value string
+	}
+
+	required := []requiredField{
+		{key: "minecraft.directory", value: c.Minecraft.Directory},
+		{key: "minecraft.command", value: c.Minecraft.Command},
+		{key: "minecraft.jar_file", value: c.Minecraft.JarFile},
+		{key: "minecraft.min_memory", value: c.Minecraft.MinMemory},
+		{key: "minecraft.max_memory", value: c.Minecraft.MaxMemory},
+	}
+	var missing []string
+
+	for _, field := range required {
+		if field.value == "" {
+			missing = append(missing, field.key)
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("missing config value: %s", strings.Join(missing, ", "))
+	}
+
+	return nil
 }
 
 func (c *Config) InitLogger() {
