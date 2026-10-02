@@ -1,0 +1,10 @@
+[minecraft]
+directory = "<minecraft server directory path>"
+command = "java"
+jar_file = "server.jar"
+min_memory = "4G"
+max_memory = "4G"
+gui = false
+
+[options]
+log_level = "debug"
