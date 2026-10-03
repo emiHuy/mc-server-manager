@@ -24,12 +24,12 @@ func main() {
 	instance := minecraft.New(conf.Minecraft)
 	err = instance.Start()
 	if err != nil {
-		slog.Error("failed to start minecraft server", "error", err)
+		slog.Error("minecraft server start failed", "error", err)
 	}
 
 	time.Sleep(15 * time.Second)
 	if err := instance.Stop(); err != nil {
 		log.Fatal(err)
 	}
-	time.Sleep(15 * time.Second)
+	time.Sleep(5 * time.Second)
 }

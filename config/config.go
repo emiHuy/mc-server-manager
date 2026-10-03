@@ -1,12 +1,19 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
+)
+
+const (
+	minStopTimeout     = time.Second
+	defaultStopTimeout = 30 * time.Second
 )
 
 type Config struct {
@@ -15,12 +22,13 @@ type Config struct {
 }
 
 type MinecraftConfig struct {
-	Directory string `toml:"directory"`
-	Command   string `toml:"command"`
-	JarFile   string `toml:"jar_file"`
-	MinMemory string `toml:"min_memory"`
-	MaxMemory string `toml:"max_memory"`
-	Gui       bool   `toml:"gui"`
+	Directory   string        `toml:"directory"`
+	Command     string        `toml:"command"`
+	JarFile     string        `toml:"jar_file"`
+	MinMemory   string        `toml:"min_memory"`
+	MaxMemory   string        `toml:"max_memory"`
+	Gui         bool          `toml:"gui"`
+	StopTimeout time.Duration `toml:"stop_timeout"`
 }
 
 type Options struct {
@@ -34,7 +42,11 @@ func LoadConfig() (Config, error) {
 
 	_, err := toml.DecodeFile(configFile, &conf)
 	if err != nil {
-		return conf, fmt.Errorf("failed to decode config file %s: %w", configFile, err)
+		return conf, fmt.Errorf("cannot decode config file %s: %w", configFile, err)
+	}
+
+	if conf.Minecraft.StopTimeout == 0 {
+		conf.Minecraft.StopTimeout = defaultStopTimeout
 	}
 
 	err = conf.validate()
@@ -66,8 +78,16 @@ func (c *Config) validate() error {
 		}
 	}
 
+	var problems []string
 	if len(missing) > 0 {
-		return fmt.Errorf("missing config value: %s", strings.Join(missing, ", "))
+		problems = append(problems, fmt.Sprintf("missing config value(s): %s", strings.Join(missing, ", ")))
+	}
+	if c.Minecraft.StopTimeout < minStopTimeout {
+		problems = append(problems, fmt.Sprintf("minecraft.stop_timeout must be at least %s", minStopTimeout))
+	}
+
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
 	}
 
 	return nil
