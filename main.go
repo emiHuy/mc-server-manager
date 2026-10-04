@@ -38,7 +38,6 @@ func main() {
 
 	select {
 	case <-done:
-		slog.Info("minecraft server exited on its own")
 		return
 	case <-sig:
 		slog.Info("interrupt received")
@@ -65,7 +64,7 @@ func main() {
 	case err := <-stopResult:
 		logStopResult(err, true)
 	case <-time.After(killWait):
-		slog.Error("minecraft server did not confirm exit after kill", "timeout", killWait)
+		slog.Error("minecraft server did not confirm exit after kill", "timeout", killWait.String())
 	}
 }
 
