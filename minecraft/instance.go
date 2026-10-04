@@ -62,6 +62,8 @@ func (inst *Instance) Start() error {
 		return fmt.Errorf("cannot get stdin pipe: %w", err)
 	}
 
+	detachFromConsole(cmd)
+
 	err = cmd.Start()
 	if err != nil {
 		inst.state = StateStopped
