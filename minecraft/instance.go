@@ -108,6 +108,44 @@ func (inst *Instance) Stop() error {
 	}
 }
 
+func (inst *Instance) Done() <-chan struct{} {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	if inst.exited == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+
+	return inst.exited
+}
+
+func (inst *Instance) Kill() error {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	if inst.cmd == nil {
+		return fmt.Errorf("cannot kill minecraft server when instance is %s", inst.state)
+	}
+
+	stateChanged := false
+	if inst.state == StateRunning {
+		inst.state = StateStopping
+		stateChanged = true
+	}
+
+	err := inst.cmd.Process.Kill()
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if stateChanged {
+			inst.state = StateRunning
+		}
+		return fmt.Errorf("cannot kill minecraft server: %w", err)
+	}
+
+	return nil
+}
+
 func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}) {
 	defer close(exited)
 	err := cmd.Wait()
@@ -128,9 +166,9 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}) {
 	inst.mu.Unlock()
 
 	if newState == StateStopped {
-		slog.Info("minecraft exited", "state", StateStopped.String(), "error", err)
+		slog.Info("minecraft server exited", "state", StateStopped.String(), "error", err)
 	} else {
-		slog.Error("minecraft crashed", "state", StateCrashed.String(), "error", err)
+		slog.Error("minecraft server crashed", "state", StateCrashed.String(), "error", err)
 	}
 }
 
