@@ -36,6 +36,10 @@ func (inst *Instance) Send(command string) error {
 	return nil
 }
 
+func (inst *Instance) RecentConsole(n int) []string {
+	return inst.console.recent(n)
+}
+
 func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 	defer close(done)
 	defer r.Close()
@@ -43,7 +47,7 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		fmt.Println(line)
+		inst.console.add(line)
 	}
 
 	err := scanner.Err()
