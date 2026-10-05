@@ -22,6 +22,8 @@ type Instance struct {
 	mu    sync.Mutex // guards state, cmd, stdin, and exited
 	state State
 
+	writeMu sync.Mutex // serializes writes to stdin
+
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	exited chan struct{}
@@ -99,10 +101,23 @@ func (inst *Instance) Start() error {
 }
 
 func (inst *Instance) Stop() error {
-	cmd, exited, err := inst.beginStop()
+	err := inst.Send("stop")
 	if err != nil {
-		return err
+		return fmt.Errorf("minecraft server stop failed: %w", err)
 	}
+
+	inst.mu.Lock()
+	if inst.state == StateRunning {
+		inst.state = StateStopping
+	}
+	cmd := inst.cmd
+	exited := inst.exited
+	inst.mu.Unlock()
+
+	if exited == nil {
+		return nil
+	}
+
 	slog.Info("stopping minecraft server", "state", StateStopping.String())
 
 	select {
@@ -197,21 +212,4 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	} else {
 		slog.Error("minecraft server crashed", "state", StateCrashed.String(), "error", err)
 	}
-}
-
-func (inst *Instance) beginStop() (*exec.Cmd, <-chan struct{}, error) {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-
-	if inst.state != StateRunning {
-		return nil, nil, fmt.Errorf("cannot stop minecraft server when instance is %s", inst.state)
-	}
-
-	_, err := inst.stdin.Write([]byte("stop\n"))
-	if err != nil {
-		return nil, nil, fmt.Errorf("cannot send stop command: %w", err)
-	}
-
-	inst.state = StateStopping
-	return inst.cmd, inst.exited, nil
 }
