@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
@@ -30,6 +33,23 @@ func main() {
 		slog.Error("minecraft server start failed", "error", err)
 		return
 	}
+
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "history" {
+				for _, l := range instance.RecentConsole(10) {
+					fmt.Println(l)
+				}
+			} else {
+				err := instance.Send(line)
+				if err != nil {
+					slog.Error("send failed", "error", err)
+				}
+			}
+		}
+	}()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
