@@ -107,6 +107,9 @@ func (inst *Instance) Stop() error {
 	}
 
 	inst.mu.Lock()
+	// The state flips after the stop command is written, not atomically with it.
+	// If the server exits non-zero in this tiny gap, watch records a crash.
+	// Revisit before adding crash auto-restart.
 	if inst.state == StateRunning {
 		inst.state = StateStopping
 	}
