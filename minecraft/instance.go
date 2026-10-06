@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	killTimeout     = 5 * time.Second
-	consoleDoneWait = 2 * time.Second
-	maxLines        = 1000
+	killTimeout        = 5 * time.Second
+	consoleDoneWait    = 2 * time.Second
+	maxLines           = 1000
+	subscriberCapacity = 64
 )
 
 type Instance struct {
@@ -29,13 +30,13 @@ type Instance struct {
 	stdin  io.WriteCloser
 	exited chan struct{}
 
-	console *ringBuffer
+	console *consoleHub
 
 	conf config.MinecraftConfig
 }
 
 func New(conf config.MinecraftConfig) *Instance {
-	return &Instance{state: StateStopped, conf: conf, console: newRingBuffer(maxLines)}
+	return &Instance{state: StateStopped, conf: conf, console: newConsoleHub(maxLines, subscriberCapacity)}
 }
 
 func (inst *Instance) Start() error {

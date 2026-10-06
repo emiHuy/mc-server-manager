@@ -40,6 +40,10 @@ func (inst *Instance) RecentConsole(n int) []string {
 	return inst.console.recent(n)
 }
 
+func (inst *Instance) Subscribe(n int) ([]string, *Subscription) {
+	return inst.console.subscribe(n)
+}
+
 func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 	defer close(done)
 	defer r.Close()
