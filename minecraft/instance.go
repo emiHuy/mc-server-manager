@@ -13,21 +13,30 @@ import (
 	"github.com/emiHuy/mc-server-manager/config"
 )
 
-const killTimeout = 5 * time.Second
+const (
+	killTimeout        = 5 * time.Second
+	consoleDoneWait    = 2 * time.Second
+	maxLines           = 1000
+	subscriberCapacity = 64
+)
 
 type Instance struct {
 	mu    sync.Mutex // guards state, cmd, stdin, and exited
 	state State
 
+	writeMu sync.Mutex // serializes writes to stdin
+
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	exited chan struct{}
+
+	console *consoleHub
 
 	conf config.MinecraftConfig
 }
 
 func New(conf config.MinecraftConfig) *Instance {
-	return &Instance{state: StateStopped, conf: conf}
+	return &Instance{state: StateStopped, conf: conf, console: newConsoleHub(maxLines, subscriberCapacity)}
 }
 
 func (inst *Instance) Start() error {
@@ -53,8 +62,6 @@ func (inst *Instance) Start() error {
 
 	cmd := exec.Command(inst.conf.Command, args...)
 	cmd.Dir = inst.conf.Directory
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -62,13 +69,28 @@ func (inst *Instance) Start() error {
 		return fmt.Errorf("cannot get stdin pipe: %w", err)
 	}
 
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		inst.state = StateStopped
+		stdin.Close()
+		return fmt.Errorf("cannot create pipe: %w", err)
+	}
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+
 	detachFromConsole(cmd)
 
 	err = cmd.Start()
 	if err != nil {
 		inst.state = StateStopped
+		writer.Close()
+		reader.Close()
 		return fmt.Errorf("cannot start minecraft server: %w", err)
 	}
+
+	writer.Close()
+	consoleDone := make(chan struct{})
+	go inst.readConsole(reader, consoleDone)
 
 	inst.state = StateRunning
 	inst.cmd = cmd
@@ -77,23 +99,39 @@ func (inst *Instance) Start() error {
 	exited := make(chan struct{})
 	inst.exited = exited
 
-	go inst.watch(cmd, exited)
+	go inst.watch(cmd, exited, consoleDone)
 
 	return nil
 }
 
 func (inst *Instance) Stop() error {
-	cmd, exited, err := inst.beginStop()
+	err := inst.Send("stop")
 	if err != nil {
-		return err
+		return fmt.Errorf("minecraft server stop failed: %w", err)
 	}
+
+	inst.mu.Lock()
+	// The state flips after the stop command is written, not atomically with it.
+	// If the server exits non-zero in this tiny gap, watch records a crash.
+	// Revisit before adding crash auto-restart.
+	if inst.state == StateRunning {
+		inst.state = StateStopping
+	}
+	cmd := inst.cmd
+	exited := inst.exited
+	inst.mu.Unlock()
+
+	if exited == nil {
+		return nil
+	}
+
 	slog.Info("stopping minecraft server", "state", StateStopping.String())
 
 	select {
 	case <-exited:
 		return nil
 	case <-time.After(inst.conf.StopTimeout):
-		slog.Warn("minecraft did not stop in time, killing process", "timeout", inst.conf.StopTimeout)
+		slog.Warn("minecraft did not stop in time, killing process", "timeout", inst.conf.StopTimeout.String())
 		err = cmd.Process.Kill()
 		if err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return fmt.Errorf("cannot kill minecraft server after stop timed out: %w", err)
@@ -146,17 +184,26 @@ func (inst *Instance) Kill() error {
 	return nil
 }
 
-func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}) {
+func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone chan struct{}) {
 	defer close(exited)
+
 	err := cmd.Wait()
+
+	select {
+	case <-consoleDone:
+	case <-time.After(consoleDoneWait):
+		slog.Warn("console output did not close after exit, continuing", "timeout", consoleDoneWait.String())
+	}
+
 	inst.mu.Lock()
 
-	if inst.state == StateStopping {
+	stopRequested := inst.state == StateStopping
+
+	if stopRequested || err == nil {
 		inst.state = StateStopped
 	} else {
 		inst.state = StateCrashed
 	}
-	newState := inst.state
 
 	if inst.cmd == cmd {
 		inst.cmd = nil
@@ -165,26 +212,11 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}) {
 	}
 	inst.mu.Unlock()
 
-	if newState == StateStopped {
+	if stopRequested {
 		slog.Info("minecraft server exited", "state", StateStopped.String(), "error", err)
+	} else if err == nil {
+		slog.Info("minecraft server exited on its own", "state", StateStopped.String())
 	} else {
 		slog.Error("minecraft server crashed", "state", StateCrashed.String(), "error", err)
 	}
-}
-
-func (inst *Instance) beginStop() (*exec.Cmd, <-chan struct{}, error) {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-
-	if inst.state != StateRunning {
-		return nil, nil, fmt.Errorf("cannot stop minecraft server when instance is %s", inst.state)
-	}
-
-	_, err := inst.stdin.Write([]byte("stop\n"))
-	if err != nil {
-		return nil, nil, fmt.Errorf("cannot send stop command: %w", err)
-	}
-
-	inst.state = StateStopping
-	return inst.cmd, inst.exited, nil
 }

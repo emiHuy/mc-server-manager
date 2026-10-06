@@ -1,11 +1,13 @@
 [minecraft]
-directory = "<minecraft server directory path>"
-command = "java"
+# Windows paths: use single quotes so backslashes are not treated as escapes.
+directory = '<minecraft server directory path>'
+# Use the full path to the real java.exe; plain "java" can leave the server running after a kill on Windows.
+command = 'C:\Program Files\Java\jdk-version\bin\java.exe'
 jar_file = "server.jar"
 min_memory = "4G"
 max_memory = "4G"
 gui = false
-stop_timeout = "30s"
+stop_timeout = "30s" # needs a unit (s, m); minimum 1s
 
 [options]
 log_level = "debug"

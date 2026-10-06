@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
@@ -31,6 +34,36 @@ func main() {
 		return
 	}
 
+	_, sub := instance.Subscribe(0)
+	printed := make(chan struct{})
+	go func() {
+		defer close(printed)
+		for line := range sub.Lines {
+			fmt.Println(line)
+		}
+	}()
+	defer func() {
+		sub.Cancel()
+		<-printed
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "history" {
+				for _, l := range instance.RecentConsole(10) {
+					fmt.Println(l)
+				}
+			} else {
+				err := instance.Send(line)
+				if err != nil {
+					slog.Error("send failed", "error", err)
+				}
+			}
+		}
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 
@@ -38,7 +71,6 @@ func main() {
 
 	select {
 	case <-done:
-		slog.Info("minecraft server exited on its own")
 		return
 	case <-sig:
 		slog.Info("interrupt received")
@@ -65,7 +97,7 @@ func main() {
 	case err := <-stopResult:
 		logStopResult(err, true)
 	case <-time.After(killWait):
-		slog.Error("minecraft server did not confirm exit after kill", "timeout", killWait)
+		slog.Error("minecraft server did not confirm exit after kill", "timeout", killWait.String())
 	}
 }
 
