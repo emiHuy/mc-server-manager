@@ -34,6 +34,19 @@ func main() {
 		return
 	}
 
+	_, sub := instance.Subscribe(0)
+	printed := make(chan struct{})
+	go func() {
+		defer close(printed)
+		for line := range sub.Lines {
+			fmt.Println(line)
+		}
+	}()
+	defer func() {
+		sub.Cancel()
+		<-printed
+	}()
+
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
