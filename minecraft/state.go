@@ -26,3 +26,7 @@ func (s State) String() string {
 		return "unknown"
 	}
 }
+
+func (s State) live() bool {
+	return s == StateStarting || s == StateRunning
+}
