@@ -18,7 +18,7 @@ func (inst *Instance) Send(command string) error {
 	}
 
 	inst.mu.Lock()
-	if inst.state != StateRunning {
+	if !inst.state.live() {
 		state := inst.state
 		inst.mu.Unlock()
 		return fmt.Errorf("cannot send command when instance is %s", state)
@@ -52,6 +52,11 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		inst.console.add(line)
+
+		event, ok := parseEvent(line)
+		if ok && event.Type == EventServerReady {
+			inst.markReady()
+		}
 	}
 
 	err := scanner.Err()

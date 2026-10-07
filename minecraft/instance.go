@@ -92,7 +92,6 @@ func (inst *Instance) Start() error {
 	consoleDone := make(chan struct{})
 	go inst.readConsole(reader, consoleDone)
 
-	inst.state = StateRunning
 	inst.cmd = cmd
 	inst.stdin = stdin
 
@@ -114,7 +113,7 @@ func (inst *Instance) Stop() error {
 	// The state flips after the stop command is written, not atomically with it.
 	// If the server exits non-zero in this tiny gap, watch records a crash.
 	// Revisit before adding crash auto-restart.
-	if inst.state == StateRunning {
+	if inst.state.live() {
 		inst.state = StateStopping
 	}
 	cmd := inst.cmd
@@ -168,7 +167,7 @@ func (inst *Instance) Kill() error {
 	}
 
 	stateChanged := false
-	if inst.state == StateRunning {
+	if inst.state.live() {
 		inst.state = StateStopping
 		stateChanged = true
 	}
@@ -219,4 +218,13 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	} else {
 		slog.Error("minecraft server crashed", "state", StateCrashed.String(), "error", err)
 	}
+}
+
+func (inst *Instance) markReady() {
+	inst.mu.Lock()
+	if inst.state == StateStarting {
+		inst.state = StateRunning
+	}
+	inst.mu.Unlock()
+	slog.Info("minecraft server ready", "state", StateRunning.String())
 }
