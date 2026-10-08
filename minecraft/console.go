@@ -54,8 +54,13 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 		inst.console.add(line)
 
 		event, ok := parseEvent(line)
-		if ok && event.Type == EventServerReady {
-			inst.markReady()
+		if !ok {
+			continue
+		}
+
+		switch event.Type {
+		case EventServerReady:
+			inst.markReady(event)
 		}
 	}
 

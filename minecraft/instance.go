@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	killTimeout        = 5 * time.Second
-	consoleDoneWait    = 2 * time.Second
-	maxLines           = 1000
-	subscriberCapacity = 64
+	killTimeout             = 5 * time.Second
+	consoleDoneWait         = 2 * time.Second
+	maxLines                = 1000
+	subscriberCapacity      = 64
+	eventSubscriberCapacity = 16
 )
 
 type Instance struct {
@@ -31,12 +32,18 @@ type Instance struct {
 	exited chan struct{}
 
 	console *consoleHub
+	events  *eventHub
 
 	conf config.MinecraftConfig
 }
 
 func New(conf config.MinecraftConfig) *Instance {
-	return &Instance{state: StateStopped, conf: conf, console: newConsoleHub(maxLines, subscriberCapacity)}
+	return &Instance{
+		state:   StateStopped,
+		conf:    conf,
+		console: newConsoleHub(maxLines, subscriberCapacity),
+		events:  newEventHub(eventSubscriberCapacity),
+	}
 }
 
 func (inst *Instance) Start() error {
@@ -47,7 +54,7 @@ func (inst *Instance) Start() error {
 		return fmt.Errorf("cannot start minecraft server when instance is %s", inst.state)
 	}
 
-	inst.state = StateStarting
+	inst.setStateLocked(StateStarting)
 	slog.Info("starting minecraft server", "state", StateStarting.String())
 
 	args := []string{
@@ -65,13 +72,13 @@ func (inst *Instance) Start() error {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		inst.state = StateStopped
+		inst.setStateLocked(StateStopped)
 		return fmt.Errorf("cannot get stdin pipe: %w", err)
 	}
 
 	reader, writer, err := os.Pipe()
 	if err != nil {
-		inst.state = StateStopped
+		inst.setStateLocked(StateStopped)
 		stdin.Close()
 		return fmt.Errorf("cannot create pipe: %w", err)
 	}
@@ -82,7 +89,7 @@ func (inst *Instance) Start() error {
 
 	err = cmd.Start()
 	if err != nil {
-		inst.state = StateStopped
+		inst.setStateLocked(StateStopped)
 		writer.Close()
 		reader.Close()
 		return fmt.Errorf("cannot start minecraft server: %w", err)
@@ -106,7 +113,7 @@ func (inst *Instance) Start() error {
 func (inst *Instance) Stop() error {
 	err := inst.Send("stop")
 	if err != nil {
-		return fmt.Errorf("minecraft server stop failed: %w", err)
+		return err
 	}
 
 	inst.mu.Lock()
@@ -114,7 +121,7 @@ func (inst *Instance) Stop() error {
 	// If the server exits non-zero in this tiny gap, watch records a crash.
 	// Revisit before adding crash auto-restart.
 	if inst.state.live() {
-		inst.state = StateStopping
+		inst.setStateLocked(StateStopping)
 	}
 	cmd := inst.cmd
 	exited := inst.exited
@@ -166,16 +173,17 @@ func (inst *Instance) Kill() error {
 		return fmt.Errorf("cannot kill minecraft server when instance is %s", inst.state)
 	}
 
+	prev := inst.state
 	stateChanged := false
-	if inst.state.live() {
-		inst.state = StateStopping
+	if prev.live() {
+		inst.setStateLocked(StateStopping)
 		stateChanged = true
 	}
 
 	err := inst.cmd.Process.Kill()
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		if stateChanged {
-			inst.state = StateRunning
+			inst.setStateLocked(prev)
 		}
 		return fmt.Errorf("cannot kill minecraft server: %w", err)
 	}
@@ -197,11 +205,12 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	inst.mu.Lock()
 
 	stopRequested := inst.state == StateStopping
+	wasStarting := inst.state == StateStarting
 
-	if stopRequested || err == nil {
-		inst.state = StateStopped
+	if stopRequested || (err == nil && !wasStarting) {
+		inst.setStateLocked(StateStopped)
 	} else {
-		inst.state = StateCrashed
+		inst.setStateLocked(StateCrashed)
 	}
 
 	if inst.cmd == cmd {
@@ -211,20 +220,42 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	}
 	inst.mu.Unlock()
 
-	if stopRequested {
+	switch {
+	case stopRequested:
 		slog.Info("minecraft server exited", "state", StateStopped.String(), "error", err)
-	} else if err == nil {
+	case wasStarting:
+		slog.Error("minecraft server exited before becoming ready", "state", StateCrashed.String(), "error", err)
+	case err == nil:
 		slog.Info("minecraft server exited on its own", "state", StateStopped.String())
-	} else {
+	default:
 		slog.Error("minecraft server crashed", "state", StateCrashed.String(), "error", err)
 	}
 }
 
-func (inst *Instance) markReady() {
+func (inst *Instance) markReady(e Event) {
 	inst.mu.Lock()
-	if inst.state == StateStarting {
-		inst.state = StateRunning
+	ready := inst.state == StateStarting
+	if ready {
+		inst.setStateLocked(StateRunning)
 	}
 	inst.mu.Unlock()
-	slog.Info("minecraft server ready", "state", StateRunning.String())
+
+	if ready {
+		slog.Info("minecraft server ready", "state", StateRunning.String())
+		inst.events.publish(e)
+	}
+}
+
+// setStateLocked changes the state. The caller must hold inst.mu.
+func (inst *Instance) setStateLocked(newState State) {
+	if inst.state == newState {
+		return
+	}
+	inst.state = newState
+	inst.events.publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
+}
+
+// Callers must call Cancel on the returned subscription when done
+func (inst *Instance) SubscribeEvents() *EventSubscription {
+	return inst.events.subscribe()
 }
