@@ -18,7 +18,7 @@ const (
 	consoleDoneWait         = 2 * time.Second
 	maxLines                = 1000
 	subscriberCapacity      = 64
-	eventSubscriberCapacity = 16
+	eventSubscriberCapacity = 64
 )
 
 type Instance struct {
