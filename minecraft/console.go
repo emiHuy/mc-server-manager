@@ -61,6 +61,8 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 		switch event.Type {
 		case EventServerReady:
 			inst.markReady(event)
+		default:
+			inst.events.publish(event)
 		}
 	}
 

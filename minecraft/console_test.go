@@ -135,7 +135,6 @@ func TestReadConsoleReadyLine(t *testing.T) {
 		runReadConsole(
 			t, inst,
 			"[20:26:33] [Server thread/INFO]: Preparing spawn area: 100%",
-			`[20:26:34] [Server thread/INFO]: <Steve> Done (0.439s)! For help, type "help"`,
 			`Exception in thread "main" java.lang.Error`,
 		)
 
@@ -144,6 +143,26 @@ func TestReadConsoleReadyLine(t *testing.T) {
 		}
 		if events := drainEvents(sub.Events); len(events) != 0 {
 			t.Errorf("published events %v, want none", events)
+		}
+	})
+
+	t.Run("chat imitating the ready line does not flip state", func(t *testing.T) {
+		inst := newInstanceInState(StateStarting)
+		sub := inst.SubscribeEvents()
+		defer sub.Cancel()
+
+		runReadConsole(t, inst, `[20:26:34] [Server thread/INFO]: <Steve> Done (0.439s)! For help, type "help"`)
+
+		if got := stateOf(inst); got != StateStarting {
+			t.Errorf("state = %v, want %v", got, StateStarting)
+		}
+
+		e := recvEvent(t, sub.Events)
+		if e.Type != EventPlayerChat || e.Player != "Steve" {
+			t.Errorf("event = %+v, want a player_chat event from Steve", e)
+		}
+		if extra := drainEvents(sub.Events); len(extra) != 0 {
+			t.Errorf("unexpected extra events: %v", extra)
 		}
 	})
 }
