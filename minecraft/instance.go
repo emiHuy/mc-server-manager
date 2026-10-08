@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	killTimeout        = 5 * time.Second
-	consoleDoneWait    = 2 * time.Second
-	maxLines           = 1000
-	subscriberCapacity = 64
+	killTimeout             = 5 * time.Second
+	consoleDoneWait         = 2 * time.Second
+	maxLines                = 1000
+	subscriberCapacity      = 64
+	eventSubscriberCapacity = 16
 )
 
 type Instance struct {
@@ -31,12 +32,18 @@ type Instance struct {
 	exited chan struct{}
 
 	console *consoleHub
+	events  *eventHub
 
 	conf config.MinecraftConfig
 }
 
 func New(conf config.MinecraftConfig) *Instance {
-	return &Instance{state: StateStopped, conf: conf, console: newConsoleHub(maxLines, subscriberCapacity)}
+	return &Instance{
+		state:   StateStopped,
+		conf:    conf,
+		console: newConsoleHub(maxLines, subscriberCapacity),
+		events:  newEventHub(eventSubscriberCapacity),
+	}
 }
 
 func (inst *Instance) Start() error {
@@ -106,7 +113,7 @@ func (inst *Instance) Start() error {
 func (inst *Instance) Stop() error {
 	err := inst.Send("stop")
 	if err != nil {
-		return fmt.Errorf("minecraft server stop failed: %w", err)
+		return err
 	}
 
 	inst.mu.Lock()
@@ -225,7 +232,7 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	}
 }
 
-func (inst *Instance) markReady() {
+func (inst *Instance) markReady(e Event) {
 	inst.mu.Lock()
 	ready := inst.state == StateStarting
 	if ready {
@@ -235,10 +242,20 @@ func (inst *Instance) markReady() {
 
 	if ready {
 		slog.Info("minecraft server ready", "state", StateRunning.String())
+		inst.events.publish(e)
 	}
 }
 
 // setStateLocked changes the state. The caller must hold inst.mu.
 func (inst *Instance) setStateLocked(newState State) {
+	if inst.state == newState {
+		return
+	}
 	inst.state = newState
+	inst.events.publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
+}
+
+// Callers must call Cancel on the returned subscription when done
+func (inst *Instance) SubscribeEvents() *EventSubscription {
+	return inst.events.subscribe()
 }
