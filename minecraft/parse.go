@@ -29,16 +29,16 @@ func parseLine(line string) (level, message string, ok bool) {
 	return level, message, true
 }
 
-func parseEvent(line string) (*Event, bool) {
+func parseEvent(line string) (Event, bool) {
 	level, message, ok := parseLine(line)
 	if !ok {
-		return &Event{}, false
+		return Event{}, false
 	}
 
 	if serverReady(level, message) {
-		return &Event{Type: EventServerReady, Timestamp: time.Now(), Message: message}, true
+		return Event{Type: EventServerReady, Timestamp: time.Now(), Message: message}, true
 	}
-	return &Event{}, false
+	return Event{}, false
 }
 
 func serverReady(level, message string) bool {
