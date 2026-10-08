@@ -28,6 +28,24 @@ func main() {
 	slog.Debug("configuration loaded")
 
 	instance := minecraft.New(conf.Minecraft)
+
+	eventSub := instance.SubscribeEvents()
+	eventsPrinted := make(chan struct{})
+	go func() {
+		defer close(eventsPrinted)
+		for e := range eventSub.Events {
+			if e.Type == minecraft.EventStateChanged {
+				fmt.Printf("[event] %s -> %s\n", e.Type, e.State)
+			} else {
+				fmt.Printf("[event] %s %q\n", e.Type, e.Message)
+			}
+		}
+	}()
+	defer func() {
+		eventSub.Cancel()
+		<-eventsPrinted
+	}()
+
 	err = instance.Start()
 	if err != nil {
 		slog.Error("minecraft server start failed", "error", err)
