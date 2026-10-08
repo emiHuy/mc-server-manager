@@ -12,6 +12,11 @@ func TestEventTypeString(t *testing.T) {
 		{name: "state changed", et: EventStateChanged, want: "state_changed"},
 		{name: "zero value is unknown", et: EventUnknown, want: "unknown"},
 		{name: "out of range is unknown", et: EventType(99), want: "unknown"},
+		{name: "server warning", et: EventServerWarning, want: "server_warning"},
+		{name: "server error", et: EventServerError, want: "server_error"},
+		{name: "player joined", et: EventPlayerJoined, want: "player_joined"},
+		{name: "player left", et: EventPlayerLeft, want: "player_left"},
+		{name: "player chat", et: EventPlayerChat, want: "player_chat"},
 	}
 
 	for _, tt := range tests {
