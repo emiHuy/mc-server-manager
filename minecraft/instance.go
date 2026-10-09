@@ -33,6 +33,7 @@ type Instance struct {
 
 	console *consoleHub
 	events  *eventHub
+	players *playerSet
 
 	conf config.MinecraftConfig
 }
@@ -43,6 +44,7 @@ func New(conf config.MinecraftConfig) *Instance {
 		conf:    conf,
 		console: newConsoleHub(maxLines, subscriberCapacity),
 		events:  newEventHub(eventSubscriberCapacity),
+		players: newPlayerSet(),
 	}
 }
 
@@ -97,6 +99,7 @@ func (inst *Instance) Start() error {
 
 	writer.Close()
 	consoleDone := make(chan struct{})
+	inst.players.clear()
 	go inst.readConsole(reader, consoleDone)
 
 	inst.cmd = cmd
@@ -207,6 +210,8 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	stopRequested := inst.state == StateStopping
 	wasStarting := inst.state == StateStarting
 
+	inst.players.clear()
+
 	if stopRequested || (err == nil && !wasStarting) {
 		inst.setStateLocked(StateStopped)
 	} else {
@@ -258,4 +263,8 @@ func (inst *Instance) setStateLocked(newState State) {
 // Callers must call Cancel on the returned subscription when done
 func (inst *Instance) SubscribeEvents() *EventSubscription {
 	return inst.events.subscribe()
+}
+
+func (inst *Instance) Players() []string {
+	return inst.players.list()
 }

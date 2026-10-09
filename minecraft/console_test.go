@@ -166,3 +166,181 @@ func TestReadConsoleReadyLine(t *testing.T) {
 		}
 	})
 }
+
+// infoLine builds a console line the way Minecraft prints INFO messages.
+func infoLine(message string) string {
+	return "[20:30:01] [Server thread/INFO]: " + message
+}
+
+func TestReadConsolePlayers(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{
+			name:  "one join",
+			lines: []string{infoLine("Steve joined the game")},
+			want:  []string{"Steve"},
+		},
+		{
+			name: "two joins are listed sorted",
+			lines: []string{
+				infoLine("Steve joined the game"),
+				infoLine("Alex joined the game"),
+			},
+			want: []string{"Alex", "Steve"},
+		},
+		{
+			name: "join then leave",
+			lines: []string{
+				infoLine("Steve joined the game"),
+				infoLine("Steve left the game"),
+			},
+			want: []string{},
+		},
+		{
+			name: "duplicate join keeps one entry",
+			lines: []string{
+				infoLine("Steve joined the game"),
+				infoLine("Steve joined the game"),
+			},
+			want: []string{"Steve"},
+		},
+		{
+			name: "leave for an unknown player changes nothing",
+			lines: []string{
+				infoLine("Steve joined the game"),
+				infoLine("Alex left the game"),
+			},
+			want: []string{"Steve"},
+		},
+		{
+			name: "rejoin after leaving",
+			lines: []string{
+				infoLine("Steve joined the game"),
+				infoLine("Steve left the game"),
+				infoLine("Steve joined the game"),
+			},
+			want: []string{"Steve"},
+		},
+		{
+			name:  "chat imitating a join adds nobody",
+			lines: []string{infoLine("<Steve> Alex joined the game")},
+			want:  []string{},
+		},
+		{
+			name: "chat imitating a leave removes nobody",
+			lines: []string{
+				infoLine("Alex joined the game"),
+				infoLine("<Steve> Alex left the game"),
+			},
+			want: []string{"Alex"},
+		},
+		{
+			name:  "name with a space is ignored",
+			lines: []string{infoLine("Some One joined the game")},
+			want:  []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := newInstanceInState(StateRunning)
+
+			runReadConsole(t, inst, tt.lines...)
+
+			if got := inst.Players(); !slices.Equal(got, tt.want) {
+				t.Errorf("Players() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadConsolePublishesPlayerEvents(t *testing.T) {
+	t.Run("join, chat, and leave are published in order", func(t *testing.T) {
+		inst := newInstanceInState(StateRunning)
+		sub := inst.SubscribeEvents()
+		defer sub.Cancel()
+
+		runReadConsole(
+			t, inst,
+			infoLine("Steve joined the game"),
+			infoLine("<Steve> hi"),
+			infoLine("Steve left the game"),
+		)
+
+		joined := recvEvent(t, sub.Events)
+		if joined.Type != EventPlayerJoined || joined.Player != "Steve" {
+			t.Errorf("first event = %+v, want player_joined for Steve", joined)
+		}
+
+		chat := recvEvent(t, sub.Events)
+		if chat.Type != EventPlayerChat || chat.Player != "Steve" || chat.Message != "hi" {
+			t.Errorf("second event = %+v, want player_chat from Steve saying %q", chat, "hi")
+		}
+
+		left := recvEvent(t, sub.Events)
+		if left.Type != EventPlayerLeft || left.Player != "Steve" {
+			t.Errorf("third event = %+v, want player_left for Steve", left)
+		}
+
+		if extra := drainEvents(sub.Events); len(extra) != 0 {
+			t.Errorf("unexpected extra events: %v", extra)
+		}
+	})
+
+	t.Run("chat imitating a join publishes chat, not a join", func(t *testing.T) {
+		inst := newInstanceInState(StateRunning)
+		sub := inst.SubscribeEvents()
+		defer sub.Cancel()
+
+		runReadConsole(t, inst, infoLine("<Steve> Alex joined the game"))
+
+		got := recvEvent(t, sub.Events)
+		if got.Type != EventPlayerChat || got.Player != "Steve" || got.Message != "Alex joined the game" {
+			t.Errorf("event = %+v, want player_chat from Steve saying %q", got, "Alex joined the game")
+		}
+		if extra := drainEvents(sub.Events); len(extra) != 0 {
+			t.Errorf("unexpected extra events: %v", extra)
+		}
+	})
+
+	t.Run("warnings and errors are published", func(t *testing.T) {
+		inst := newInstanceInState(StateRunning)
+		sub := inst.SubscribeEvents()
+		defer sub.Cancel()
+
+		runReadConsole(
+			t, inst,
+			"[20:30:01] [Server thread/WARN]: Can't keep up!",
+			"[20:30:02] [Server thread/ERROR]: Failed to save level",
+		)
+
+		warn := recvEvent(t, sub.Events)
+		if warn.Type != EventServerWarning || warn.Message != "Can't keep up!" {
+			t.Errorf("first event = %+v, want server_warning %q", warn, "Can't keep up!")
+		}
+
+		errEvent := recvEvent(t, sub.Events)
+		if errEvent.Type != EventServerError || errEvent.Message != "Failed to save level" {
+			t.Errorf("second event = %+v, want server_error %q", errEvent, "Failed to save level")
+		}
+	})
+
+	t.Run("ordinary lines publish nothing", func(t *testing.T) {
+		inst := newInstanceInState(StateRunning)
+		sub := inst.SubscribeEvents()
+		defer sub.Cancel()
+
+		runReadConsole(
+			t, inst,
+			infoLine("Preparing spawn area: 100%"),
+			`Exception in thread "main" java.lang.Error`,
+		)
+
+		if events := drainEvents(sub.Events); len(events) != 0 {
+			t.Errorf("published events %v, want none", events)
+		}
+	})
+}

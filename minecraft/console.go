@@ -61,9 +61,17 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 		switch event.Type {
 		case EventServerReady:
 			inst.markReady(event)
+		case EventPlayerJoined:
+			inst.players.add(event.Player)
+			inst.events.publish(event)
+		case EventPlayerLeft:
+			inst.players.remove(event.Player)
+			inst.events.publish(event)
 		default:
 			inst.events.publish(event)
 		}
+
+		fmt.Println(inst.Players())
 	}
 
 	err := scanner.Err()
