@@ -4,6 +4,32 @@ import "testing"
 
 const readyLine = `[20:26:34] [Server thread/INFO]: Done (0.439s)! For help, type "help"`
 
+func TestEventTypeString(t *testing.T) {
+	tests := []struct {
+		name string
+		et   EventType
+		want string
+	}{
+		{name: "server ready", et: EventServerReady, want: "server_ready"},
+		{name: "state changed", et: EventStateChanged, want: "state_changed"},
+		{name: "zero value is unknown", et: EventUnknown, want: "unknown"},
+		{name: "out of range is unknown", et: EventType(99), want: "unknown"},
+		{name: "server warning", et: EventServerWarning, want: "server_warning"},
+		{name: "server error", et: EventServerError, want: "server_error"},
+		{name: "player joined", et: EventPlayerJoined, want: "player_joined"},
+		{name: "player left", et: EventPlayerLeft, want: "player_left"},
+		{name: "player chat", et: EventPlayerChat, want: "player_chat"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.et.String(); got != tt.want {
+				t.Errorf("EventType(%d).String() = %q, want %q", int(tt.et), got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseLine(t *testing.T) {
 	tests := []struct {
 		name        string
