@@ -22,7 +22,7 @@ const (
 )
 
 type Instance struct {
-	mu    sync.Mutex // guards state, cmd, stdin, and exited
+	mu    sync.Mutex // guards state, cmd, stdin, exited, startAt
 	state State
 
 	writeMu sync.Mutex // serializes writes to stdin
@@ -34,6 +34,8 @@ type Instance struct {
 	console *consoleHub
 	events  *eventHub
 	players *playerSet
+
+	startedAt time.Time
 
 	conf config.MinecraftConfig
 }
@@ -256,6 +258,14 @@ func (inst *Instance) setStateLocked(newState State) {
 	if inst.state == newState {
 		return
 	}
+
+	switch newState {
+	case StateRunning:
+		inst.startedAt = time.Now()
+	case StateStopped, StateCrashed:
+		inst.startedAt = time.Time{}
+	}
+
 	inst.state = newState
 	inst.events.publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
 }

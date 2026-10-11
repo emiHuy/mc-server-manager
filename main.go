@@ -69,11 +69,20 @@ func main() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
-			if line == "history" {
+			switch line {
+			case "history":
 				for _, l := range instance.RecentConsole(10) {
 					fmt.Println(l)
 				}
-			} else {
+			case "players":
+				fmt.Println(instance.Players())
+			case "metrics":
+				m, err := instance.Metrics()
+				if err != nil {
+					slog.Error("metrics failed", "error", err)
+				}
+				fmt.Printf("%+v\n", m)
+			default:
 				err := instance.Send(line)
 				if err != nil {
 					slog.Error("send failed", "error", err)
