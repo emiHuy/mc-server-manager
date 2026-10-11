@@ -1,16 +1,20 @@
 package minecraft
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
+	"github.com/emiHuy/mc-server-manager/internal/sysmetrics"
 )
 
 const (
@@ -19,6 +23,7 @@ const (
 	maxLines                = 1000
 	subscriberCapacity      = 64
 	eventSubscriberCapacity = 64
+	metricsSampleWindow     = 250 * time.Millisecond
 )
 
 type Instance struct {
@@ -38,6 +43,22 @@ type Instance struct {
 	startedAt time.Time
 
 	conf config.MinecraftConfig
+}
+
+type Metrics struct {
+	State         State
+	Uptime        time.Duration
+	PlayersOnline int
+
+	CPUPercent        float64
+	CPUMachinePercent float64
+	CPUCores          int
+
+	MemoryBytes uint64
+
+	DiskUsedBytes  uint64
+	DiskFreeBytes  uint64
+	DiskTotalBytes uint64
 }
 
 func New(conf config.MinecraftConfig) *Instance {
@@ -196,6 +217,96 @@ func (inst *Instance) Kill() error {
 	return nil
 }
 
+func (inst *Instance) Subscribe(n int) ([]string, *Subscription) {
+	return inst.console.subscribe(n)
+}
+
+// Callers must call Cancel on the returned subscription when done
+func (inst *Instance) SubscribeEvents() *EventSubscription {
+	return inst.events.subscribe()
+}
+
+func (inst *Instance) Send(command string) error {
+	trimmedCommand := strings.TrimSpace(command)
+	if trimmedCommand == "" {
+		return errors.New("cannot send empty command")
+	} else if strings.Contains(trimmedCommand, "\n") || strings.Contains(trimmedCommand, "\r") {
+		return errors.New("command cannot include \\n or \\r")
+	}
+
+	inst.mu.Lock()
+	if !inst.state.live() {
+		state := inst.state
+		inst.mu.Unlock()
+		return fmt.Errorf("cannot send command when instance is %s", state)
+	}
+	stdin := inst.stdin
+	inst.mu.Unlock()
+
+	inst.writeMu.Lock()
+	defer inst.writeMu.Unlock()
+
+	_, err := stdin.Write([]byte(trimmedCommand + "\n"))
+	if err != nil {
+		return fmt.Errorf("cannot send command to minecraft server: %w", err)
+	}
+	return nil
+}
+
+func (inst *Instance) RecentConsole(n int) []string {
+	return inst.console.recent(n)
+}
+
+func (inst *Instance) Players() []string {
+	return inst.players.list()
+}
+
+func (inst *Instance) Metrics() (Metrics, error) {
+	inst.mu.Lock()
+	state := inst.state
+	startedAt := inst.startedAt
+
+	var pid int32
+	hasProcess := false
+	if inst.cmd != nil && inst.cmd.Process != nil {
+		pid = int32(inst.cmd.Process.Pid)
+		hasProcess = true
+	}
+	inst.mu.Unlock()
+
+	m := Metrics{
+		State:         state,
+		PlayersOnline: len(inst.Players()),
+		CPUCores:      runtime.NumCPU(),
+	}
+
+	if !startedAt.IsZero() {
+		m.Uptime = time.Since(startedAt)
+	}
+
+	if hasProcess {
+		sampler, err := sysmetrics.NewSampler(pid)
+		if err == nil {
+			cpu, mem, err := sampler.Sample(metricsSampleWindow)
+			if err == nil {
+				m.CPUPercent = cpu
+				m.CPUMachinePercent = min(cpu/float64(m.CPUCores), 100)
+				m.MemoryBytes = mem
+			}
+		}
+	}
+
+	usage, err := sysmetrics.DiskUsage(inst.conf.Directory)
+	if err != nil {
+		return m, fmt.Errorf("cannot read disk usage: %w", err)
+	}
+	m.DiskUsedBytes = usage.Used
+	m.DiskFreeBytes = usage.Free
+	m.DiskTotalBytes = usage.Total
+
+	return m, nil
+}
+
 func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone chan struct{}) {
 	defer close(exited)
 
@@ -270,11 +381,39 @@ func (inst *Instance) setStateLocked(newState State) {
 	inst.events.publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
 }
 
-// Callers must call Cancel on the returned subscription when done
-func (inst *Instance) SubscribeEvents() *EventSubscription {
-	return inst.events.subscribe()
-}
+func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
+	defer close(done)
+	defer r.Close()
 
-func (inst *Instance) Players() []string {
-	return inst.players.list()
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		inst.console.add(line)
+
+		event, ok := parseEvent(line)
+		if !ok {
+			continue
+		}
+
+		switch event.Type {
+		case EventServerReady:
+			inst.markReady(event)
+		case EventPlayerJoined:
+			inst.players.add(event.Player)
+			inst.events.publish(event)
+		case EventPlayerLeft:
+			inst.players.remove(event.Player)
+			inst.events.publish(event)
+		default:
+			inst.events.publish(event)
+		}
+
+		fmt.Println(inst.Players())
+	}
+
+	err := scanner.Err()
+	if err != nil {
+		slog.Error("console read failed", "error", err)
+		io.Copy(io.Discard, r)
+	}
 }
