@@ -5,28 +5,46 @@ import (
 	"time"
 )
 
-func parseLine(line string) (level, message string, ok bool) {
-	if !strings.HasPrefix(line, "[") {
-		return "", "", false
-	}
+type EventType int
 
-	slash := strings.Index(line, "/")
-	if slash == -1 {
-		return "", "", false
-	}
+type Event struct {
+	Type      EventType
+	Timestamp time.Time
+	Player    string // only meaningful for EventPlayerJoined, EventPlayerLeft, EventPlayerChat
+	Message   string // the console message, for events parsed from a console line
+	State     State  // only meaningful for EventStateChanged
+}
 
-	end := strings.Index(line[slash:], "]")
-	if end == -1 {
-		return "", "", false
-	}
+const (
+	EventUnknown EventType = iota
+	EventServerWarning
+	EventServerError
+	EventServerReady
+	EventStateChanged
+	EventPlayerJoined
+	EventPlayerLeft
+	EventPlayerChat
+)
 
-	level = line[slash+1 : slash+end]
-	message, ok = strings.CutPrefix(line[slash+end+1:], ": ")
-	if !ok {
-		return "", "", false
+func (et EventType) String() string {
+	switch et {
+	case EventServerWarning:
+		return "server_warning"
+	case EventServerError:
+		return "server_error"
+	case EventServerReady:
+		return "server_ready"
+	case EventStateChanged:
+		return "state_changed"
+	case EventPlayerJoined:
+		return "player_joined"
+	case EventPlayerLeft:
+		return "player_left"
+	case EventPlayerChat:
+		return "player_chat"
+	default:
+		return "unknown"
 	}
-
-	return level, message, true
 }
 
 func parseEvent(line string) (Event, bool) {
@@ -51,6 +69,30 @@ func parseEvent(line string) (Event, bool) {
 		return Event{Type: EventPlayerChat, Timestamp: timestamp, Player: player, Message: chat}, true
 	}
 	return Event{}, false
+}
+
+func parseLine(line string) (level, message string, ok bool) {
+	if !strings.HasPrefix(line, "[") {
+		return "", "", false
+	}
+
+	slash := strings.Index(line, "/")
+	if slash == -1 {
+		return "", "", false
+	}
+
+	end := strings.Index(line[slash:], "]")
+	if end == -1 {
+		return "", "", false
+	}
+
+	level = line[slash+1 : slash+end]
+	message, ok = strings.CutPrefix(line[slash+end+1:], ": ")
+	if !ok {
+		return "", "", false
+	}
+
+	return level, message, true
 }
 
 func serverReady(level, message string) bool {

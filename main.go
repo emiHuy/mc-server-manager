@@ -33,7 +33,7 @@ func main() {
 	eventsPrinted := make(chan struct{})
 	go func() {
 		defer close(eventsPrinted)
-		for e := range eventSub.Events {
+		for e := range eventSub.C {
 			if e.Type == minecraft.EventStateChanged {
 				fmt.Printf("[event] %s -> %s\n", e.Type, e.State)
 			} else {
@@ -56,7 +56,7 @@ func main() {
 	printed := make(chan struct{})
 	go func() {
 		defer close(printed)
-		for line := range sub.Lines {
+		for line := range sub.C {
 			fmt.Println(line)
 		}
 	}()
