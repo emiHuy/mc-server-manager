@@ -14,16 +14,17 @@ import (
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
+	"github.com/emiHuy/mc-server-manager/internal/fanout"
 	"github.com/emiHuy/mc-server-manager/internal/sysmetrics"
 )
 
 const (
-	killTimeout             = 5 * time.Second
-	consoleDoneWait         = 2 * time.Second
-	maxLines                = 1000
-	subscriberCapacity      = 64
-	eventSubscriberCapacity = 64
-	metricsSampleWindow     = 250 * time.Millisecond
+	killTimeout               = 5 * time.Second
+	consoleDoneWait           = 2 * time.Second
+	maxLines                  = 1000
+	consoleSubscriberCapacity = 64
+	eventSubscriberCapacity   = 64
+	metricsSampleWindow       = 250 * time.Millisecond
 )
 
 type Instance struct {
@@ -36,8 +37,8 @@ type Instance struct {
 	stdin  io.WriteCloser
 	exited chan struct{}
 
-	console *consoleHub
-	events  *eventHub
+	console *fanout.Hub[string]
+	events  *fanout.Hub[Event]
 	players *playerSet
 
 	startedAt time.Time
@@ -65,8 +66,8 @@ func New(conf config.MinecraftConfig) *Instance {
 	return &Instance{
 		state:   StateStopped,
 		conf:    conf,
-		console: newConsoleHub(maxLines, subscriberCapacity),
-		events:  newEventHub(eventSubscriberCapacity),
+		console: fanout.New[string]("console", consoleSubscriberCapacity, maxLines),
+		events:  fanout.New[Event]("events", eventSubscriberCapacity, 0),
 		players: newPlayerSet(),
 	}
 }
@@ -217,13 +218,14 @@ func (inst *Instance) Kill() error {
 	return nil
 }
 
-func (inst *Instance) Subscribe(n int) ([]string, *Subscription) {
-	return inst.console.subscribe(n)
+func (inst *Instance) Subscribe(n int) ([]string, *fanout.Subscription[string]) {
+	return inst.console.Subscribe(n)
 }
 
 // Callers must call Cancel on the returned subscription when done
-func (inst *Instance) SubscribeEvents() *EventSubscription {
-	return inst.events.subscribe()
+func (inst *Instance) SubscribeEvents() *fanout.Subscription[Event] {
+	_, sub := inst.events.Subscribe(0)
+	return sub
 }
 
 func (inst *Instance) Send(command string) error {
@@ -254,7 +256,7 @@ func (inst *Instance) Send(command string) error {
 }
 
 func (inst *Instance) RecentConsole(n int) []string {
-	return inst.console.recent(n)
+	return inst.console.Recent(n)
 }
 
 func (inst *Instance) Players() []string {
@@ -360,7 +362,7 @@ func (inst *Instance) markReady(e Event) {
 
 	if ready {
 		slog.Info("minecraft server ready", "state", StateRunning.String())
-		inst.events.publish(e)
+		inst.events.Publish(e)
 	}
 }
 
@@ -378,7 +380,7 @@ func (inst *Instance) setStateLocked(newState State) {
 	}
 
 	inst.state = newState
-	inst.events.publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
+	inst.events.Publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
 }
 
 func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
@@ -388,7 +390,7 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		inst.console.add(line)
+		inst.console.Publish(line)
 
 		event, ok := parseEvent(line)
 		if !ok {
@@ -400,12 +402,12 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 			inst.markReady(event)
 		case EventPlayerJoined:
 			inst.players.add(event.Player)
-			inst.events.publish(event)
+			inst.events.Publish(event)
 		case EventPlayerLeft:
 			inst.players.remove(event.Player)
-			inst.events.publish(event)
+			inst.events.Publish(event)
 		default:
-			inst.events.publish(event)
+			inst.events.Publish(event)
 		}
 
 		fmt.Println(inst.Players())

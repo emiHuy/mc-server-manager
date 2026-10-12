@@ -10,6 +10,39 @@ import (
 	"github.com/emiHuy/mc-server-manager/config"
 )
 
+const testTimeout = time.Second
+
+const readyLine = `[20:26:34] [Server thread/INFO]: Done (0.439s)! For help, type "help"`
+
+func recvEvent(t *testing.T, ch <-chan Event) Event {
+	t.Helper()
+	select {
+	case e, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed, expected an event")
+		}
+		return e
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for an event")
+	}
+	return Event{}
+}
+
+func drainEvents(ch <-chan Event) []string {
+	var messages []string
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				return messages
+			}
+			messages = append(messages, e.Message)
+		default:
+			return messages
+		}
+	}
+}
+
 func TestReadConsoleFillsBuffer(t *testing.T) {
 	inst := New(config.MinecraftConfig{})
 
@@ -69,12 +102,12 @@ func TestReadConsoleReadyLine(t *testing.T) {
 
 		runReadConsole(t, inst, readyLine)
 
-		first := recvEvent(t, sub.Events)
+		first := recvEvent(t, sub.C)
 		if first.Type != EventStateChanged || first.State != StateRunning {
 			t.Errorf("first event = %+v, want state_changed to running", first)
 		}
 
-		second := recvEvent(t, sub.Events)
+		second := recvEvent(t, sub.C)
 		if second.Type != EventServerReady {
 			t.Errorf("second event type = %v, want %v", second.Type, EventServerReady)
 		}
@@ -103,9 +136,9 @@ func TestReadConsoleReadyLine(t *testing.T) {
 		runReadConsole(t, inst, readyLine, readyLine)
 
 		// One state_changed and one server_ready, nothing more.
-		recvEvent(t, sub.Events)
-		recvEvent(t, sub.Events)
-		if extra := drainEvents(sub.Events); len(extra) != 0 {
+		recvEvent(t, sub.C)
+		recvEvent(t, sub.C)
+		if extra := drainEvents(sub.C); len(extra) != 0 {
 			t.Errorf("unexpected extra events: %v", extra)
 		}
 	})
@@ -120,7 +153,7 @@ func TestReadConsoleReadyLine(t *testing.T) {
 			if got := stateOf(inst); got != state {
 				t.Errorf("state %v changed to %v, want it unchanged", state, got)
 			}
-			if events := drainEvents(sub.Events); len(events) != 0 {
+			if events := drainEvents(sub.C); len(events) != 0 {
 				t.Errorf("state %v published events %v, want none", state, events)
 			}
 			sub.Cancel()
@@ -141,7 +174,7 @@ func TestReadConsoleReadyLine(t *testing.T) {
 		if got := stateOf(inst); got != StateStarting {
 			t.Errorf("state = %v, want %v", got, StateStarting)
 		}
-		if events := drainEvents(sub.Events); len(events) != 0 {
+		if events := drainEvents(sub.C); len(events) != 0 {
 			t.Errorf("published events %v, want none", events)
 		}
 	})
@@ -157,11 +190,11 @@ func TestReadConsoleReadyLine(t *testing.T) {
 			t.Errorf("state = %v, want %v", got, StateStarting)
 		}
 
-		e := recvEvent(t, sub.Events)
+		e := recvEvent(t, sub.C)
 		if e.Type != EventPlayerChat || e.Player != "Steve" {
 			t.Errorf("event = %+v, want a player_chat event from Steve", e)
 		}
-		if extra := drainEvents(sub.Events); len(extra) != 0 {
+		if extra := drainEvents(sub.C); len(extra) != 0 {
 			t.Errorf("unexpected extra events: %v", extra)
 		}
 	})
@@ -270,22 +303,22 @@ func TestReadConsolePublishesPlayerEvents(t *testing.T) {
 			infoLine("Steve left the game"),
 		)
 
-		joined := recvEvent(t, sub.Events)
+		joined := recvEvent(t, sub.C)
 		if joined.Type != EventPlayerJoined || joined.Player != "Steve" {
 			t.Errorf("first event = %+v, want player_joined for Steve", joined)
 		}
 
-		chat := recvEvent(t, sub.Events)
+		chat := recvEvent(t, sub.C)
 		if chat.Type != EventPlayerChat || chat.Player != "Steve" || chat.Message != "hi" {
 			t.Errorf("second event = %+v, want player_chat from Steve saying %q", chat, "hi")
 		}
 
-		left := recvEvent(t, sub.Events)
+		left := recvEvent(t, sub.C)
 		if left.Type != EventPlayerLeft || left.Player != "Steve" {
 			t.Errorf("third event = %+v, want player_left for Steve", left)
 		}
 
-		if extra := drainEvents(sub.Events); len(extra) != 0 {
+		if extra := drainEvents(sub.C); len(extra) != 0 {
 			t.Errorf("unexpected extra events: %v", extra)
 		}
 	})
@@ -297,11 +330,11 @@ func TestReadConsolePublishesPlayerEvents(t *testing.T) {
 
 		runReadConsole(t, inst, infoLine("<Steve> Alex joined the game"))
 
-		got := recvEvent(t, sub.Events)
+		got := recvEvent(t, sub.C)
 		if got.Type != EventPlayerChat || got.Player != "Steve" || got.Message != "Alex joined the game" {
 			t.Errorf("event = %+v, want player_chat from Steve saying %q", got, "Alex joined the game")
 		}
-		if extra := drainEvents(sub.Events); len(extra) != 0 {
+		if extra := drainEvents(sub.C); len(extra) != 0 {
 			t.Errorf("unexpected extra events: %v", extra)
 		}
 	})
@@ -317,12 +350,12 @@ func TestReadConsolePublishesPlayerEvents(t *testing.T) {
 			"[20:30:02] [Server thread/ERROR]: Failed to save level",
 		)
 
-		warn := recvEvent(t, sub.Events)
+		warn := recvEvent(t, sub.C)
 		if warn.Type != EventServerWarning || warn.Message != "Can't keep up!" {
 			t.Errorf("first event = %+v, want server_warning %q", warn, "Can't keep up!")
 		}
 
-		errEvent := recvEvent(t, sub.Events)
+		errEvent := recvEvent(t, sub.C)
 		if errEvent.Type != EventServerError || errEvent.Message != "Failed to save level" {
 			t.Errorf("second event = %+v, want server_error %q", errEvent, "Failed to save level")
 		}
@@ -339,7 +372,7 @@ func TestReadConsolePublishesPlayerEvents(t *testing.T) {
 			`Exception in thread "main" java.lang.Error`,
 		)
 
-		if events := drainEvents(sub.Events); len(events) != 0 {
+		if events := drainEvents(sub.C); len(events) != 0 {
 			t.Errorf("published events %v, want none", events)
 		}
 	})
