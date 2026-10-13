@@ -19,31 +19,34 @@ import (
 )
 
 const (
-	killTimeout               = 5 * time.Second
-	consoleDoneWait           = 2 * time.Second
-	maxLines                  = 1000
+	killTimeout               = 5 * time.Second        // wait for the exit after killing the process
+	consoleDoneWait           = 2 * time.Second        // wait for console output to drain after the process exits
+	metricsSampleWindow       = 250 * time.Millisecond // how long Metrics samples CPU
+	maxLines                  = 1000                   // console lines kept as history
 	consoleSubscriberCapacity = 64
 	eventSubscriberCapacity   = 64
-	metricsSampleWindow       = 250 * time.Millisecond
 )
 
+// Instance manages one Minecraft server process.
+// Publishing to the hubs while holding mu is safe because they never call back into Instance.
 type Instance struct {
-	mu    sync.Mutex // guards state, cmd, stdin, exited, startAt
-	state State
-
-	writeMu sync.Mutex // serializes writes to stdin
-
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	exited chan struct{}
-
+	// The hubs and the player set lock themselves.
+	conf    config.MinecraftConfig
 	console *fanout.Hub[string]
 	events  *fanout.Hub[Event]
 	players *playerSet
 
-	startedAt time.Time
+	// writeMu serializes writes to stdin so concurrent commands cannot
+	// interleave. Lock order: mu before writeMu, never the reverse.
+	writeMu sync.Mutex
 
-	conf config.MinecraftConfig
+	// mu guards every field below it.
+	mu        sync.Mutex
+	state     State
+	startedAt time.Time // zero unless the server is running
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	exited    chan struct{}
 }
 
 type Metrics struct {
@@ -51,7 +54,7 @@ type Metrics struct {
 	Uptime        time.Duration
 	PlayersOnline int
 
-	CPUPercent        float64
+	CPUPercent        float64 // per core
 	CPUMachinePercent float64
 	CPUCores          int
 
@@ -72,6 +75,8 @@ func New(conf config.MinecraftConfig) *Instance {
 	}
 }
 
+// Start launches the server process and returns without waiting for the world to load.
+// The state stays starting until EventServerReady.
 func (inst *Instance) Start() error {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -137,6 +142,8 @@ func (inst *Instance) Start() error {
 	return nil
 }
 
+// Stop asks the server to stop and waits for it to exit.
+// If it does not exit within StopTimeout, the process is killed.
 func (inst *Instance) Stop() error {
 	err := inst.Send("stop")
 	if err != nil {
@@ -179,19 +186,7 @@ func (inst *Instance) Stop() error {
 	}
 }
 
-func (inst *Instance) Done() <-chan struct{} {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-
-	if inst.exited == nil {
-		ch := make(chan struct{})
-		close(ch)
-		return ch
-	}
-
-	return inst.exited
-}
-
+// Kill terminates the process immediately, without a world save.
 func (inst *Instance) Kill() error {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -218,16 +213,22 @@ func (inst *Instance) Kill() error {
 	return nil
 }
 
-func (inst *Instance) Subscribe(n int) ([]string, *fanout.Subscription[string]) {
-	return inst.console.Subscribe(n)
+// Done returns a channel that closes when the current process exits.
+// If nothing is running, it returns one that is already closed.
+func (inst *Instance) Done() <-chan struct{} {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	if inst.exited == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+
+	return inst.exited
 }
 
-// Callers must call Cancel on the returned subscription when done
-func (inst *Instance) SubscribeEvents() *fanout.Subscription[Event] {
-	_, sub := inst.events.Subscribe(0)
-	return sub
-}
-
+// Send writes a console command to the server.
 func (inst *Instance) Send(command string) error {
 	trimmedCommand := strings.TrimSpace(command)
 	if trimmedCommand == "" {
@@ -255,6 +256,19 @@ func (inst *Instance) Send(command string) error {
 	return nil
 }
 
+// Subscribe returns up to n recent console lines and a subscription to new ones.
+// Callers must call Cancel on the returned subscription when done.
+func (inst *Instance) Subscribe(n int) ([]string, *fanout.Subscription[string]) {
+	return inst.console.Subscribe(n)
+}
+
+// SubscribeEvents returns a subscription to events.
+// Callers must call Cancel on it when done.
+func (inst *Instance) SubscribeEvents() *fanout.Subscription[Event] {
+	_, sub := inst.events.Subscribe(0)
+	return sub
+}
+
 func (inst *Instance) RecentConsole(n int) []string {
 	return inst.console.Recent(n)
 }
@@ -263,6 +277,9 @@ func (inst *Instance) Players() []string {
 	return inst.players.list()
 }
 
+// Metrics reports process and disk statistics.
+// The process fields are zero when no process is running.
+// It blocks for metricsSampleWindow while sampling CPU.
 func (inst *Instance) Metrics() (Metrics, error) {
 	inst.mu.Lock()
 	state := inst.state
@@ -309,11 +326,14 @@ func (inst *Instance) Metrics() (Metrics, error) {
 	return m, nil
 }
 
+// watch is the only caller of cmd.Wait.
+// It records how the process ended and clears the per-launch fields.
 func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone chan struct{}) {
 	defer close(exited)
 
 	err := cmd.Wait()
 
+	// Let the reader finish, so the last lines are published before exited closes.
 	select {
 	case <-consoleDone:
 	case <-time.After(consoleDoneWait):
@@ -327,12 +347,15 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 
 	inst.players.clear()
 
+	// A requested stop is always a stop.
+	// Otherwise a clean exit counts as one only after the server was ready
 	if stopRequested || (err == nil && !wasStarting) {
 		inst.setStateLocked(StateStopped)
 	} else {
 		inst.setStateLocked(StateCrashed)
 	}
 
+	// A newer launch may already own these fields.
 	if inst.cmd == cmd {
 		inst.cmd = nil
 		inst.stdin = nil
@@ -352,6 +375,8 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	}
 }
 
+// markReady moves starting to running once.
+// It does nothing if a stop or kill got there first.
 func (inst *Instance) markReady(e Event) {
 	inst.mu.Lock()
 	ready := inst.state == StateStarting
@@ -366,7 +391,8 @@ func (inst *Instance) markReady(e Event) {
 	}
 }
 
-// setStateLocked changes the state. The caller must hold inst.mu.
+// setStateLocked changes the state and publishes the change.
+// The caller must hold inst.mu.
 func (inst *Instance) setStateLocked(newState State) {
 	if inst.state == newState {
 		return
@@ -383,6 +409,8 @@ func (inst *Instance) setStateLocked(newState State) {
 	inst.events.Publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
 }
 
+// readConsole publishes each console line and acts on the events it finds.
+// It handles events inline and not through a subscription, because a subscriber can drop items and these updates must not be missed.
 func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 	defer close(done)
 	defer r.Close()
@@ -409,8 +437,6 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 		default:
 			inst.events.Publish(event)
 		}
-
-		fmt.Println(inst.Players())
 	}
 
 	err := scanner.Err()
