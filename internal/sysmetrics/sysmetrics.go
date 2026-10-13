@@ -1,3 +1,4 @@
+// Package sysmetrics provides utilities for sampling process CPU and memory usage and retrieving disk usage statistics.
 package sysmetrics
 
 import (
@@ -8,7 +9,10 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-type Sampler struct { // not safe for concurrent use
+// Sampler samples CPU and memory usage for a specific process.
+//
+// Sampler is not safe for concurrent use.
+type Sampler struct {
 	proc *process.Process
 }
 
@@ -20,6 +24,9 @@ func NewSampler(pid int32) (*Sampler, error) {
 	return &Sampler{proc: proc}, nil
 }
 
+// Sample measures the process's CPU usage over the specified window and retrieves its resident memory usage in bytes.
+//
+// The CPU measurement may block for the duration of window.
 func (s *Sampler) Sample(window time.Duration) (cpuPercent float64, memoryBytes uint64, err error) {
 	cpuPercent, err = s.proc.Percent(window)
 	if err != nil {
@@ -34,12 +41,14 @@ func (s *Sampler) Sample(window time.Duration) (cpuPercent float64, memoryBytes 
 	return cpuPercent, mem.RSS, nil
 }
 
+// Disk represents disk usage statistics for a filesystem (in bytes).
 type Disk struct {
 	Used  uint64
 	Free  uint64
 	Total uint64
 }
 
+// DiskUsage retrieves disk usage statistics for the filesystem containing path.
 func DiskUsage(path string) (Disk, error) {
 	usage, err := disk.Usage(path)
 	if err != nil {

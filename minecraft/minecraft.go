@@ -1,3 +1,5 @@
+// Package minecraft manages a Minecraft server process.
+// This includes starting and stopping the server, sending console commands, tracking players, publishing events, and collecting metrics.
 package minecraft
 
 import (

@@ -5,9 +5,11 @@ import (
 	"sync"
 )
 
+// playerSet stores the names of online players.
+// It is safe for concurrent use.
 type playerSet struct {
-	players map[string]struct{}
 	mu      sync.Mutex // guards players
+	players map[string]struct{}
 }
 
 func newPlayerSet() *playerSet {
