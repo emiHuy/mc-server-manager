@@ -1,5 +1,6 @@
 package fanout
 
+// ring is a fixed-size circular buffer that retains the most recently added items.
 type ring[T any] struct {
 	items []T
 	next  int

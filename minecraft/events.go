@@ -5,16 +5,21 @@ import (
 	"time"
 )
 
+// EventType identifies the type of server event.
 type EventType int
 
+// Event describes something that happened on the server.
+// Which fields are set depends on Type.
 type Event struct {
 	Type      EventType
 	Timestamp time.Time
 	Player    string // only meaningful for EventPlayerJoined, EventPlayerLeft, EventPlayerChat
-	Message   string // the console message, for events parsed from a console line
+	Message   string // the console message; for chat events, just the chat text
 	State     State  // only meaningful for EventStateChanged
 }
 
+// EventStateChanged is published by Instance when its state changes.
+// The other events are parsed from console lines.
 const (
 	EventUnknown EventType = iota
 	EventServerWarning
@@ -47,6 +52,7 @@ func (et EventType) String() string {
 	}
 }
 
+// parseEvent turns a console line into an event. It returns false for lines that are not events.
 func parseEvent(line string) (Event, bool) {
 	level, message, ok := parseLine(line)
 	if !ok {
@@ -71,6 +77,7 @@ func parseEvent(line string) (Event, bool) {
 	return Event{}, false
 }
 
+// parseLine splits a console line like "[12:00:00] [Server thread/INFO]: text" into its level ("INFO") and message ("text").
 func parseLine(line string) (level, message string, ok bool) {
 	if !strings.HasPrefix(line, "[") {
 		return "", "", false

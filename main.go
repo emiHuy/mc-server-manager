@@ -18,7 +18,7 @@ const killWait = 5 * time.Second
 func main() {
 	conf, err := config.LoadConfig()
 	if err != nil {
-		slog.Error("failed to load config", "error", err)
+		slog.Error("config load failed", "error", err)
 		return
 	}
 
@@ -29,6 +29,7 @@ func main() {
 
 	instance := minecraft.New(conf.Minecraft)
 
+	// Temporary scaffolding until the CLI and API exist: print events and console output, and read commands from stdin.
 	eventSub := instance.SubscribeEvents()
 	eventsPrinted := make(chan struct{})
 	go func() {
@@ -65,6 +66,8 @@ func main() {
 		<-printed
 	}()
 
+	// These words are handled by the manager.
+	// Anything else is sent to the server as a console command.
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
@@ -79,15 +82,20 @@ func main() {
 			case "metrics":
 				m, err := instance.Metrics()
 				if err != nil {
-					slog.Error("metrics failed", "error", err)
+					slog.Warn("metrics failed", "error", err)
 				}
 				fmt.Printf("%+v\n", m)
 			default:
 				err := instance.Send(line)
 				if err != nil {
-					slog.Error("send failed", "error", err)
+					slog.Warn("send failed", "error", err)
 				}
 			}
+		}
+
+		err := scanner.Err()
+		if err != nil {
+			slog.Error("stdin read failed", "error", err)
 		}
 	}()
 
@@ -96,6 +104,7 @@ func main() {
 
 	done := instance.Done()
 
+	// If the server exits on its own, the instance has already logged how.
 	select {
 	case <-done:
 		return
@@ -103,6 +112,8 @@ func main() {
 		slog.Info("interrupt received")
 	}
 
+	// Stop blocks until the server exits, so run it in a goroutine and keep
+	// listening: a second interrupt kills the server instead of waiting.
 	stopResult := make(chan error, 1)
 	go func() {
 		stopResult <- instance.Stop()
@@ -116,15 +127,16 @@ func main() {
 		slog.Warn("second interrupt received, killing minecraft server")
 		err = instance.Kill()
 		if err != nil {
-			slog.Error("minecraft server kill request failed", "error", err)
+			slog.Error("minecraft server kill failed", "error", err)
 		}
 	}
 
+	// Kill makes the pending Stop return, but bound the wait so a process that will not die cannot hang the manager.
 	select {
 	case err := <-stopResult:
 		logStopResult(err, true)
 	case <-time.After(killWait):
-		slog.Error("minecraft server did not confirm exit after kill", "timeout", killWait.String())
+		slog.Error("minecraft server exit not confirmed after kill", "timeout", killWait.String())
 	}
 }
 

@@ -1,5 +1,6 @@
 package minecraft
 
+// State represents the lifecycle state of a Minecraft server instance.
 type State int
 
 const (
@@ -27,6 +28,7 @@ func (s State) String() string {
 	}
 }
 
+// live reports whether the server is starting or running.
 func (s State) live() bool {
 	return s == StateStarting || s == StateRunning
 }

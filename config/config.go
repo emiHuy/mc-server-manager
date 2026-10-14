@@ -1,3 +1,4 @@
+// Package config loads, validates, and applies application configuration from a TOML file.
 package config
 
 import (
@@ -16,11 +17,13 @@ const (
 	defaultStopTimeout = 30 * time.Second
 )
 
+// Config contains the application configuration.
 type Config struct {
 	Minecraft MinecraftConfig `toml:"minecraft"`
 	Options   Options         `toml:"options"`
 }
 
+// MinecraftConfig contains configuration for launching and managing a Minecraft server.
 type MinecraftConfig struct {
 	Directory   string        `toml:"directory"`
 	Command     string        `toml:"command"`
@@ -31,12 +34,16 @@ type MinecraftConfig struct {
 	StopTimeout time.Duration `toml:"stop_timeout"`
 }
 
+// Options contains application-level options.
 type Options struct {
 	LogLevel string `toml:"log_level"`
 }
 
 const configFile = "./config/config.toml"
 
+// LoadConfig reads the configuration file, applies default values, and validates the resulting configuration.
+//
+// It returns an error if the file cannot be decoded or the configuration is invalid.
 func LoadConfig() (Config, error) {
 	var conf Config
 
@@ -57,6 +64,7 @@ func LoadConfig() (Config, error) {
 	return conf, nil
 }
 
+// validate checks that required configuration values are present and that the stop timeout meets the minimum allowed duration.
 func (c *Config) validate() error {
 	type requiredField struct {
 		key   string
@@ -80,7 +88,7 @@ func (c *Config) validate() error {
 
 	var problems []string
 	if len(missing) > 0 {
-		problems = append(problems, fmt.Sprintf("missing config value(s): %s", strings.Join(missing, ", ")))
+		problems = append(problems, fmt.Sprintf("missing required config keys: %s", strings.Join(missing, ", ")))
 	}
 	if c.Minecraft.StopTimeout < minStopTimeout {
 		problems = append(problems, fmt.Sprintf("minecraft.stop_timeout must be at least %s", minStopTimeout))
@@ -93,6 +101,9 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// InitLogger configures the default slog logger to write JSON-formatted log entries to standard output using the configured minimum log level.
+//
+// Unrecognized log levels default to info.
 func (c *Config) InitLogger() {
 	var level slog.Level
 
