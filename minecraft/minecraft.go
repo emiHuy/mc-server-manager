@@ -113,7 +113,7 @@ func (inst *Instance) Start() error {
 	if err != nil {
 		inst.setStateLocked(StateStopped)
 		stdin.Close()
-		return fmt.Errorf("cannot create pipe: %w", err)
+		return fmt.Errorf("cannot create console pipe: %w", err)
 	}
 	cmd.Stdout = writer
 	cmd.Stderr = writer
@@ -184,7 +184,7 @@ func (inst *Instance) Stop() error {
 	case <-exited:
 		return nil
 	case <-time.After(killTimeout):
-		return fmt.Errorf("minecraft server did not exit within %s of being killed", killTimeout)
+		return fmt.Errorf("cannot confirm minecraft server exited within %s of being killed", killTimeout)
 	}
 }
 
@@ -236,7 +236,7 @@ func (inst *Instance) Send(command string) error {
 	if trimmedCommand == "" {
 		return errors.New("cannot send empty command")
 	} else if strings.Contains(trimmedCommand, "\n") || strings.Contains(trimmedCommand, "\r") {
-		return errors.New("command cannot include \\n or \\r")
+		return errors.New("cannot send command containing a line break")
 	}
 
 	inst.mu.Lock()
@@ -319,7 +319,7 @@ func (inst *Instance) Metrics() (Metrics, error) {
 
 	usage, err := sysmetrics.DiskUsage(inst.conf.Directory)
 	if err != nil {
-		return m, fmt.Errorf("cannot read disk usage: %w", err)
+		return m, err
 	}
 	m.DiskUsedBytes = usage.Used
 	m.DiskFreeBytes = usage.Free

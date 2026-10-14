@@ -88,7 +88,7 @@ func (c *Config) validate() error {
 
 	var problems []string
 	if len(missing) > 0 {
-		problems = append(problems, fmt.Sprintf("missing config value(s): %s", strings.Join(missing, ", ")))
+		problems = append(problems, fmt.Sprintf("missing required config keys: %s", strings.Join(missing, ", ")))
 	}
 	if c.Minecraft.StopTimeout < minStopTimeout {
 		problems = append(problems, fmt.Sprintf("minecraft.stop_timeout must be at least %s", minStopTimeout))
