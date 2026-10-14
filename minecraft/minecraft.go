@@ -88,7 +88,7 @@ func (inst *Instance) Start() error {
 	}
 
 	inst.setStateLocked(StateStarting)
-	slog.Info("starting minecraft server", "state", StateStarting.String())
+	slog.Info("minecraft server starting", "state", StateStarting.String())
 
 	args := []string{
 		"-Xms" + inst.conf.MinMemory,
@@ -167,13 +167,13 @@ func (inst *Instance) Stop() error {
 		return nil
 	}
 
-	slog.Info("stopping minecraft server", "state", StateStopping.String())
+	slog.Info("minecraft server stopping", "state", StateStopping.String())
 
 	select {
 	case <-exited:
 		return nil
 	case <-time.After(inst.conf.StopTimeout):
-		slog.Warn("minecraft did not stop in time, killing process", "timeout", inst.conf.StopTimeout.String())
+		slog.Warn("minecraft server did not stop in time, killing process", "timeout", inst.conf.StopTimeout.String())
 		err = cmd.Process.Kill()
 		if err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return fmt.Errorf("cannot kill minecraft server after stop timed out: %w", err)
@@ -339,7 +339,7 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	select {
 	case <-consoleDone:
 	case <-time.After(consoleDoneWait):
-		slog.Warn("console output did not close after exit, continuing", "timeout", consoleDoneWait.String())
+		slog.Warn("console output did not close after exit", "timeout", consoleDoneWait.String())
 	}
 
 	inst.mu.Lock()
@@ -443,7 +443,7 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 
 	err := scanner.Err()
 	if err != nil {
-		slog.Error("console read failed", "error", err)
+		slog.Warn("console read failed", "error", err)
 		io.Copy(io.Discard, r)
 	}
 }

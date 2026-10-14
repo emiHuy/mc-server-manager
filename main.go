@@ -18,7 +18,7 @@ const killWait = 5 * time.Second
 func main() {
 	conf, err := config.LoadConfig()
 	if err != nil {
-		slog.Error("failed to load config", "error", err)
+		slog.Error("config load failed", "error", err)
 		return
 	}
 
@@ -82,13 +82,13 @@ func main() {
 			case "metrics":
 				m, err := instance.Metrics()
 				if err != nil {
-					slog.Error("metrics failed", "error", err)
+					slog.Warn("metrics failed", "error", err)
 				}
 				fmt.Printf("%+v\n", m)
 			default:
 				err := instance.Send(line)
 				if err != nil {
-					slog.Error("send failed", "error", err)
+					slog.Warn("send failed", "error", err)
 				}
 			}
 		}
