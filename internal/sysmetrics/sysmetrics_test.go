@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -51,19 +52,14 @@ func TestSampleScale(t *testing.T) {
 		t.Fatalf("NewSampler(own pid) error: %v", err)
 	}
 
-	stop := make(chan struct{})
+	var stop atomic.Bool
 	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		for !stop.Load() {
 		}
 	}()
 
 	cpu, _, err := sampler.Sample(500 * time.Millisecond)
-	close(stop)
+	stop.Store(true)
 	if err != nil {
 		t.Fatalf("Sample() error: %v", err)
 	}
