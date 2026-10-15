@@ -1,87 +1,61 @@
 package minecraft
 
 import (
-	"io"
+	"bytes"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
 )
 
-const testTimeout = time.Second
-
-const readyLine = `[20:26:34] [Server thread/INFO]: Done (0.439s)! For help, type "help"`
-
-func recvEvent(t *testing.T, ch <-chan Event) Event {
-	t.Helper()
-	select {
-	case e, ok := <-ch:
-		if !ok {
-			t.Fatal("channel closed, expected an event")
-		}
-		return e
-	case <-time.After(testTimeout):
-		t.Fatal("timed out waiting for an event")
-	}
-	return Event{}
+// recordingWriter stands in for the server's stdin. It is deliberately not
+// safe for concurrent use, so a test using it also checks that Send
+// serializes its writes.
+type recordingWriter struct {
+	bytes.Buffer
 }
 
-func drainEvents(ch <-chan Event) []string {
-	var messages []string
-	for {
-		select {
-		case e, ok := <-ch:
-			if !ok {
-				return messages
-			}
-			messages = append(messages, e.Message)
-		default:
-			return messages
-		}
-	}
-}
+func (w *recordingWriter) Close() error { return nil }
 
-func TestReadConsoleFillsBuffer(t *testing.T) {
+// failingWriter is a stdin whose writes always fail.
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+func (failingWriter) Close() error                { return nil }
+
+func TestReadConsoleFillsHistory(t *testing.T) {
 	inst := New(config.MinecraftConfig{})
 
 	runReadConsole(t, inst, "a", "b", "c")
 
 	got := inst.RecentConsole(10)
 	want := []string{"a", "b", "c"}
-
 	if !slices.Equal(got, want) {
-		t.Errorf("RecentConsole(10) mismatch:\n got: %v\nwant: %v", got, want)
+		t.Errorf("RecentConsole(10) = %v, want %v", got, want)
 	}
 }
 
-func runReadConsole(t *testing.T, inst *Instance, lines ...string) {
-	t.Helper()
-
-	input := strings.Join(lines, "\n") + "\n"
-	reader := io.NopCloser(strings.NewReader(input))
-	done := make(chan struct{})
-
-	go inst.readConsole(reader, done)
-
-	select {
-	case <-done:
-	case <-time.After(testTimeout):
-		t.Fatal("timeout waiting for readConsole to complete")
-	}
-}
-
-func stateOf(inst *Instance) State {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	return inst.state
-}
-
-func newInstanceInState(state State) *Instance {
+func TestSubscribeConsole(t *testing.T) {
 	inst := New(config.MinecraftConfig{})
-	inst.state = state
-	return inst
+	runReadConsole(t, inst, "a", "b", "c")
+
+	snapshot, sub := inst.Subscribe(2)
+	defer sub.Cancel()
+
+	if want := []string{"b", "c"}; !slices.Equal(snapshot, want) {
+		t.Errorf("snapshot = %v, want %v", snapshot, want)
+	}
+
+	runReadConsole(t, inst, "d")
+	if got := recvLine(t, sub.C); got != "d" {
+		t.Errorf("first live line = %q, want %q", got, "d")
+	}
 }
 
 func TestReadConsoleReadyLine(t *testing.T) {
@@ -198,11 +172,6 @@ func TestReadConsoleReadyLine(t *testing.T) {
 			t.Errorf("unexpected extra events: %v", extra)
 		}
 	})
-}
-
-// infoLine builds a console line the way Minecraft prints INFO messages.
-func infoLine(message string) string {
-	return "[20:30:01] [Server thread/INFO]: " + message
 }
 
 func TestReadConsolePlayers(t *testing.T) {
@@ -376,4 +345,161 @@ func TestReadConsolePublishesPlayerEvents(t *testing.T) {
 			t.Errorf("published events %v, want none", events)
 		}
 	})
+}
+
+func TestSendRejectsBadInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		state   State
+		want    string // substring of the error
+	}{
+		{"empty", "", StateRunning, "empty"},
+		{"whitespace only", "  \t ", StateRunning, "empty"},
+		{"embedded newline", "say hi\nstop", StateRunning, "line break"},
+		{"embedded carriage return", "say hi\rstop", StateRunning, "line break"},
+		{"stopped", "list", StateStopped, "stopped"},
+		{"stopping", "list", StateStopping, "stopping"},
+		{"crashed", "list", StateCrashed, "crashed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := newInstanceInState(tt.state)
+			stdin := &recordingWriter{}
+			inst.stdin = stdin
+
+			err := inst.Send(tt.command)
+			if err == nil {
+				t.Fatalf("Send(%q) in state %v returned no error", tt.command, tt.state)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Send(%q) error = %q, want it to contain %q", tt.command, err, tt.want)
+			}
+			if stdin.Len() != 0 {
+				t.Errorf("Send(%q) wrote %q to stdin despite the error", tt.command, stdin.String())
+			}
+		})
+	}
+}
+
+func TestSendWritesTrimmedCommand(t *testing.T) {
+	// Commands are accepted while the server is still loading as well.
+	for _, state := range []State{StateStarting, StateRunning} {
+		t.Run(state.String(), func(t *testing.T) {
+			inst := newInstanceInState(state)
+			stdin := &recordingWriter{}
+			inst.stdin = stdin
+
+			err := inst.Send("  say hello world \n")
+			if err != nil {
+				t.Fatalf("Send() error: %v", err)
+			}
+
+			if got, want := stdin.String(), "say hello world\n"; got != want {
+				t.Errorf("stdin received %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSendReturnsWriteError(t *testing.T) {
+	boom := errors.New("pipe closed")
+
+	inst := newInstanceInState(StateRunning)
+	inst.stdin = failingWriter{err: boom}
+
+	err := inst.Send("list")
+	if !errors.Is(err, boom) {
+		t.Errorf("Send() error = %v, want it to wrap %v", err, boom)
+	}
+}
+
+func TestSendSerializesWrites(t *testing.T) {
+	const senders = 50
+
+	inst := newInstanceInState(StateRunning)
+	stdin := &recordingWriter{}
+	inst.stdin = stdin
+
+	var wg sync.WaitGroup
+	for i := 0; i < senders; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := inst.Send(fmt.Sprintf("say message-%d", i)); err != nil {
+				t.Errorf("Send() error: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got := strings.Split(strings.TrimSuffix(stdin.String(), "\n"), "\n")
+
+	want := make([]string, senders)
+	for i := range want {
+		want[i] = fmt.Sprintf("say message-%d", i)
+	}
+
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("stdin lines were interleaved or lost:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestMetricsStopped(t *testing.T) {
+	inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+
+	m, err := inst.Metrics()
+	if err != nil {
+		t.Fatalf("Metrics() error: %v", err)
+	}
+
+	if m.State != StateStopped {
+		t.Errorf("State = %v, want %v", m.State, StateStopped)
+	}
+	if m.Uptime != 0 {
+		t.Errorf("Uptime = %v, want 0", m.Uptime)
+	}
+	if m.PlayersOnline != 0 {
+		t.Errorf("PlayersOnline = %d, want 0", m.PlayersOnline)
+	}
+	if m.CPUPercent != 0 || m.CPUMachinePercent != 0 || m.MemoryBytes != 0 {
+		t.Errorf("process fields = cpu %v / %v, memory %d, want all zero",
+			m.CPUPercent, m.CPUMachinePercent, m.MemoryBytes)
+	}
+	if m.CPUCores != runtime.NumCPU() {
+		t.Errorf("CPUCores = %d, want %d", m.CPUCores, runtime.NumCPU())
+	}
+	if m.DiskTotalBytes == 0 {
+		t.Errorf("DiskTotalBytes = 0, want disk usage reported even when stopped")
+	}
+}
+
+func TestMetricsCountsPlayers(t *testing.T) {
+	inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+	inst.players.add("Steve")
+	inst.players.add("Alex")
+
+	m, err := inst.Metrics()
+	if err != nil {
+		t.Fatalf("Metrics() error: %v", err)
+	}
+	if m.PlayersOnline != 2 {
+		t.Errorf("PlayersOnline = %d, want 2", m.PlayersOnline)
+	}
+}
+
+func TestMetricsMissingDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does", "not", "exist")
+	inst := New(config.MinecraftConfig{Directory: missing})
+
+	m, err := inst.Metrics()
+	if err == nil {
+		t.Fatal("Metrics() returned no error for a missing directory")
+	}
+	if m.State != StateStopped {
+		t.Errorf("State = %v, want the partly filled result to keep %v", m.State, StateStopped)
+	}
 }

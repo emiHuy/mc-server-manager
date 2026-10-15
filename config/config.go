@@ -41,15 +41,18 @@ type Options struct {
 
 const configFile = "./config/config.toml"
 
-// LoadConfig reads the configuration file, applies default values, and validates the resulting configuration.
-//
-// It returns an error if the file cannot be decoded or the configuration is invalid.
+// LoadConfig reads and validates the config file at configFile.
 func LoadConfig() (Config, error) {
+	return loadConfig(configFile)
+}
+
+// loadConfig decodes the file at path, applies defaults, then validates.
+func loadConfig(path string) (Config, error) {
 	var conf Config
 
-	_, err := toml.DecodeFile(configFile, &conf)
+	_, err := toml.DecodeFile(path, &conf)
 	if err != nil {
-		return conf, fmt.Errorf("cannot decode config file %s: %w", configFile, err)
+		return conf, fmt.Errorf("cannot decode config file %s: %w", path, err)
 	}
 
 	if conf.Minecraft.StopTimeout == 0 {
