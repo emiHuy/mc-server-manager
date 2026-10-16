@@ -81,16 +81,7 @@ func runReadConsole(t *testing.T, inst *Instance, lines ...string) {
 	}
 }
 
-// stateOf reads the instance state under its lock. Replace it with a State()
-// getter on Instance once that exists.
-func stateOf(inst *Instance) State {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	return inst.state
-}
-
-// newInstanceInState returns an instance with its state set directly, without
-// publishing an event, so a test starts from a known point.
+// newInstanceInState returns an instance with its state set directly, without publishing an event, so a test starts from a known point.
 func newInstanceInState(state State) *Instance {
 	inst := New(config.MinecraftConfig{})
 	inst.state = state

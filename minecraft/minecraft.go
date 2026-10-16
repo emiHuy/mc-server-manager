@@ -328,6 +328,13 @@ func (inst *Instance) Metrics() (Metrics, error) {
 	return m, nil
 }
 
+// State reads the instance state under its lock.
+func (inst *Instance) State() State {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.state
+}
+
 // watch is the only caller of cmd.Wait.
 // It records how the process ended and clears the per-launch fields.
 func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone chan struct{}) {
