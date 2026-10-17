@@ -45,7 +45,7 @@ func TestSubscribeConsole(t *testing.T) {
 	inst := New(config.MinecraftConfig{})
 	runReadConsole(t, inst, "a", "b", "c")
 
-	snapshot, sub := inst.Subscribe(2)
+	snapshot, sub := inst.SubscribeConsole(2)
 	defer sub.Cancel()
 
 	if want := []string{"b", "c"}; !slices.Equal(snapshot, want) {

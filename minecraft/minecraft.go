@@ -24,9 +24,11 @@ const (
 	killTimeout               = 5 * time.Second        // wait for the exit after killing the process
 	consoleDoneWait           = 2 * time.Second        // wait for console output to drain after the process exits
 	metricsSampleWindow       = 250 * time.Millisecond // how long Metrics samples CPU
-	maxLines                  = 1000                   // console lines kept as history
+	defaultMetricsInterval    = 3 * time.Second
+	maxLines                  = 1000 // console lines kept as history
 	consoleSubscriberCapacity = 64
 	eventSubscriberCapacity   = 64
+	metricsSubscriberCapacity = 4
 )
 
 // Instance manages one Minecraft server process.
@@ -38,9 +40,16 @@ type Instance struct {
 	events  *fanout.Hub[Event]
 	players *playerSet
 
-	// writeMu serializes writes to stdin so concurrent commands cannot
-	// interleave. Lock order: mu before writeMu, never the reverse.
+	metrics         *fanout.Hub[Metrics]
+	metricsInterval time.Duration
+
+	// writeMu serializes writes to stdin so concurrent commands cannot interleave.
+	// Lock order: mu before writeMu, never the reverse.
 	writeMu sync.Mutex
+	// samplerMu guards samplerRunning.
+	// It is held only around subscribing and the subscriber check, never while taking mu.
+	samplerMu      sync.Mutex
+	samplerRunning bool
 
 	// mu guards every field below it.
 	mu        sync.Mutex
@@ -69,11 +78,16 @@ type Metrics struct {
 
 func New(conf config.MinecraftConfig) *Instance {
 	return &Instance{
-		state:   StateStopped,
-		conf:    conf,
+		state: StateStopped,
+
+		conf: conf,
+
 		console: fanout.New[string]("console", consoleSubscriberCapacity, maxLines),
 		events:  fanout.New[Event]("events", eventSubscriberCapacity, 0),
 		players: newPlayerSet(),
+
+		metrics:         fanout.New[Metrics]("metrics", metricsSubscriberCapacity, 1),
+		metricsInterval: defaultMetricsInterval,
 	}
 }
 
@@ -271,9 +285,39 @@ func (inst *Instance) Send(command string) error {
 	return nil
 }
 
-// Subscribe returns up to n recent console lines and a subscription to new ones.
+// RecentConsole return the n most recent console lines.
+func (inst *Instance) RecentConsole(n int) []string {
+	return inst.console.Recent(n)
+}
+
+// Players returns a list of online player names.
+func (inst *Instance) Players() []string {
+	return inst.players.list()
+}
+
+// Metrics reports process and disk statistics.
+// The process fields are zero when no process is running.
+// It blocks for metricsSampleWindow while sampling CPU.
+func (inst *Instance) Metrics() (Metrics, error) {
+	return inst.collect(func(pid int32) (float64, uint64, error) {
+		sampler, err := sysmetrics.NewSampler(pid)
+		if err != nil {
+			return 0, 0, err
+		}
+		return sampler.Sample(metricsSampleWindow)
+	})
+}
+
+// State reads the instance state under its lock.
+func (inst *Instance) State() State {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.state
+}
+
+// SubscribeConsole returns up to n recent console lines and a subscription to new ones.
 // Callers must call Cancel on the returned subscription when done.
-func (inst *Instance) Subscribe(n int) ([]string, *fanout.Subscription[string]) {
+func (inst *Instance) SubscribeConsole(n int) ([]string, *fanout.Subscription[string]) {
 	return inst.console.Subscribe(n)
 }
 
@@ -284,68 +328,24 @@ func (inst *Instance) SubscribeEvents() *fanout.Subscription[Event] {
 	return sub
 }
 
-func (inst *Instance) RecentConsole(n int) []string {
-	return inst.console.Recent(n)
-}
+// SubscribeMetrics returns the latest reading, if one is current, and a subscription to new ones.
+// Sampling runs only while a subscription exists.
+// Callers must call Cancel on the subscription when done.
+func (inst *Instance) SubscribeMetrics() ([]Metrics, *fanout.Subscription[Metrics]) {
+	inst.samplerMu.Lock()
+	defer inst.samplerMu.Unlock()
 
-func (inst *Instance) Players() []string {
-	return inst.players.list()
-}
+	wasRunning := inst.samplerRunning
+	latest, sub := inst.metrics.Subscribe(1)
 
-// Metrics reports process and disk statistics.
-// The process fields are zero when no process is running.
-// It blocks for metricsSampleWindow while sampling CPU.
-func (inst *Instance) Metrics() (Metrics, error) {
-	inst.mu.Lock()
-	state := inst.state
-	startedAt := inst.startedAt
-
-	var pid int32
-	hasProcess := false
-	if inst.cmd != nil && inst.cmd.Process != nil {
-		pid = int32(inst.cmd.Process.Pid)
-		hasProcess = true
-	}
-	inst.mu.Unlock()
-
-	m := Metrics{
-		State:         state,
-		PlayersOnline: len(inst.Players()),
-		CPUCores:      runtime.NumCPU(),
+	if !wasRunning {
+		// The history is from the last time anyone was watching, so it is stale.
+		latest = nil
+		inst.samplerRunning = true
+		go inst.sampleLoop()
 	}
 
-	if !startedAt.IsZero() {
-		m.Uptime = time.Since(startedAt)
-	}
-
-	if hasProcess {
-		sampler, err := sysmetrics.NewSampler(pid)
-		if err == nil {
-			cpu, mem, err := sampler.Sample(metricsSampleWindow)
-			if err == nil {
-				m.CPUPercent = cpu
-				m.CPUMachinePercent = min(cpu/float64(m.CPUCores), 100)
-				m.MemoryBytes = mem
-			}
-		}
-	}
-
-	usage, err := sysmetrics.DiskUsage(inst.conf.Directory)
-	if err != nil {
-		return m, err
-	}
-	m.DiskUsedBytes = usage.Used
-	m.DiskFreeBytes = usage.Free
-	m.DiskTotalBytes = usage.Total
-
-	return m, nil
-}
-
-// State reads the instance state under its lock.
-func (inst *Instance) State() State {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	return inst.state
+	return latest, sub
 }
 
 // watch is the only caller of cmd.Wait.
@@ -468,5 +468,91 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 	if err != nil {
 		slog.Warn("console read failed", "error", err)
 		io.Copy(io.Discard, r)
+	}
+}
+
+// collect gathers current runtime metrics for the instance.
+func (inst *Instance) collect(sample func(pid int32) (cpu float64, mem uint64, err error)) (Metrics, error) {
+	inst.mu.Lock()
+	state := inst.state
+	startedAt := inst.startedAt
+
+	var pid int32
+	hasProcess := false
+	if inst.cmd != nil && inst.cmd.Process != nil {
+		pid = int32(inst.cmd.Process.Pid)
+		hasProcess = true
+	}
+	inst.mu.Unlock()
+
+	m := Metrics{
+		State:         state,
+		PlayersOnline: len(inst.Players()),
+		CPUCores:      runtime.NumCPU(),
+	}
+
+	if !startedAt.IsZero() {
+		m.Uptime = time.Since(startedAt)
+	}
+
+	if hasProcess {
+		cpu, mem, err := sample(pid)
+		if err == nil {
+			m.CPUPercent = cpu
+			m.CPUMachinePercent = min(cpu/float64(m.CPUCores), 100)
+			m.MemoryBytes = mem
+		}
+	}
+
+	usage, err := sysmetrics.DiskUsage(inst.conf.Directory)
+	if err != nil {
+		return m, err
+	}
+	m.DiskUsedBytes = usage.Used
+	m.DiskFreeBytes = usage.Free
+	m.DiskTotalBytes = usage.Total
+
+	return m, nil
+}
+
+// sampleLoop publishes a reading every metricsInterval until nobody is subscribed.
+func (inst *Instance) sampleLoop() {
+	var sampler *sysmetrics.Sampler
+	var samplerPID int32
+
+	// A new sampler measures over a short window for its first reading.
+	// After that it compares against the previous call, so it need not wait.
+	sample := func(pid int32) (float64, uint64, error) {
+		var window time.Duration
+		if sampler == nil || samplerPID != pid {
+			s, err := sysmetrics.NewSampler(pid)
+			if err != nil {
+				return 0, 0, err
+			}
+			sampler, samplerPID = s, pid
+			window = metricsSampleWindow
+		}
+		return sampler.Sample(window)
+	}
+
+	ticker := time.NewTicker(inst.metricsInterval)
+	defer ticker.Stop()
+
+	for {
+		m, err := inst.collect(sample)
+		if err != nil {
+			slog.Debug("metrics sample incomplete", "error", err)
+		}
+		inst.metrics.Publish(m)
+
+		<-ticker.C
+
+		inst.samplerMu.Lock()
+		if inst.metrics.Len() == 0 {
+			inst.samplerRunning = false
+			inst.samplerMu.Unlock()
+			return
+		}
+		inst.samplerMu.Unlock()
 	}
 }
