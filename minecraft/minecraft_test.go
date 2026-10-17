@@ -64,7 +64,7 @@ func TestReadConsoleReadyLine(t *testing.T) {
 
 		runReadConsole(t, inst, readyLine)
 
-		if got := stateOf(inst); got != StateRunning {
+		if got := inst.State(); got != StateRunning {
 			t.Errorf("state = %v, want %v", got, StateRunning)
 		}
 	})
@@ -124,7 +124,7 @@ func TestReadConsoleReadyLine(t *testing.T) {
 
 			runReadConsole(t, inst, readyLine)
 
-			if got := stateOf(inst); got != state {
+			if got := inst.State(); got != state {
 				t.Errorf("state %v changed to %v, want it unchanged", state, got)
 			}
 			if events := drainEvents(sub.C); len(events) != 0 {
@@ -145,7 +145,7 @@ func TestReadConsoleReadyLine(t *testing.T) {
 			`Exception in thread "main" java.lang.Error`,
 		)
 
-		if got := stateOf(inst); got != StateStarting {
+		if got := inst.State(); got != StateStarting {
 			t.Errorf("state = %v, want %v", got, StateStarting)
 		}
 		if events := drainEvents(sub.C); len(events) != 0 {
@@ -160,7 +160,7 @@ func TestReadConsoleReadyLine(t *testing.T) {
 
 		runReadConsole(t, inst, `[20:26:34] [Server thread/INFO]: <Steve> Done (0.439s)! For help, type "help"`)
 
-		if got := stateOf(inst); got != StateStarting {
+		if got := inst.State(); got != StateStarting {
 			t.Errorf("state = %v, want %v", got, StateStarting)
 		}
 

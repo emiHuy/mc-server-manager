@@ -52,6 +52,33 @@ func (et EventType) String() string {
 	}
 }
 
+func (et EventType) MarshalText() ([]byte, error) {
+	return []byte(et.String()), nil
+}
+
+func (et *EventType) UnmarshalText(text []byte) error {
+	str := string(text)
+	switch str {
+	case "server_warning":
+		*et = EventServerWarning
+	case "server_error":
+		*et = EventServerError
+	case "server_ready":
+		*et = EventServerReady
+	case "state_changed":
+		*et = EventStateChanged
+	case "player_joined":
+		*et = EventPlayerJoined
+	case "player_left":
+		*et = EventPlayerLeft
+	case "player_chat":
+		*et = EventPlayerChat
+	default:
+		*et = EventUnknown
+	}
+	return nil
+}
+
 // parseEvent turns a console line into an event. It returns false for lines that are not events.
 func parseEvent(line string) (Event, bool) {
 	level, message, ok := parseLine(line)

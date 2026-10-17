@@ -2,6 +2,7 @@ package minecraft
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -90,8 +91,8 @@ func runFakeServer(mode string) {
 	os.Exit(1)
 }
 
-// newFakeInstance returns an instance that launches the fake server. Any
-// process still running when the test ends is killed.
+// newFakeInstance returns an instance that launches the fake server.
+// Any process still running when the test ends is killed.
 func newFakeInstance(t *testing.T, mode string, stopTimeout time.Duration) *Instance {
 	t.Helper()
 
@@ -141,8 +142,8 @@ func startFake(t *testing.T, mode string, stopTimeout time.Duration) (*Instance,
 	return inst, sub
 }
 
-// waitForState reads events until the instance reports want. It returns every
-// state change seen on the way, ending with want.
+// waitForState reads events until the instance reports want.
+// It returns every state change seen on the way, ending with want.
 func waitForState(t *testing.T, sub *fanout.Subscription[Event], want State) []State {
 	t.Helper()
 
@@ -237,7 +238,7 @@ func TestLifecycleStartAndStop(t *testing.T) {
 		t.Fatalf("Stop() error: %v", err)
 	}
 
-	if got := stateOf(inst); got != StateStopped {
+	if got := inst.State(); got != StateStopped {
 		t.Errorf("state after Stop() = %v, want %v", got, StateStopped)
 	}
 	if want, got := []State{StateStopping, StateStopped}, drainStates(sub.C); !slices.Equal(got, want) {
@@ -256,10 +257,13 @@ func TestLifecycleStartRefusedWhileRunning(t *testing.T) {
 	if err == nil {
 		t.Fatal("second Start() returned no error")
 	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("second Start() error = %v, want it to wrap %v", err, ErrInvalidState)
+	}
 	if !strings.Contains(err.Error(), "running") {
 		t.Errorf("second Start() error = %q, want it to mention the running state", err)
 	}
-	if got := stateOf(inst); got != StateRunning {
+	if got := inst.State(); got != StateRunning {
 		t.Errorf("state after refused Start() = %v, want %v", got, StateRunning)
 	}
 }
@@ -279,7 +283,7 @@ func TestLifecycleStopTimeoutKillsProcess(t *testing.T) {
 	if elapsed := time.Since(began); elapsed < timeout {
 		t.Errorf("Stop() returned after %v, before the %v timeout", elapsed, timeout)
 	}
-	if got := stateOf(inst); got != StateStopped {
+	if got := inst.State(); got != StateStopped {
 		t.Errorf("state after forced stop = %v, want %v", got, StateStopped)
 	}
 }
@@ -287,7 +291,7 @@ func TestLifecycleStopTimeoutKillsProcess(t *testing.T) {
 func TestLifecycleStopWhileStarting(t *testing.T) {
 	inst, sub := startFake(t, modeNeverReady, 5*time.Second)
 
-	if got := stateOf(inst); got != StateStarting {
+	if got := inst.State(); got != StateStarting {
 		t.Fatalf("state = %v, want %v", got, StateStarting)
 	}
 
@@ -296,7 +300,7 @@ func TestLifecycleStopWhileStarting(t *testing.T) {
 		t.Fatalf("Stop() error: %v", err)
 	}
 
-	if got := stateOf(inst); got != StateStopped {
+	if got := inst.State(); got != StateStopped {
 		t.Errorf("state after Stop() = %v, want %v", got, StateStopped)
 	}
 	if want, got := []State{StateStarting, StateStopping, StateStopped}, drainStates(sub.C); !slices.Equal(got, want) {
@@ -322,7 +326,7 @@ func TestLifecycleKill(t *testing.T) {
 	}
 
 	// An intentional kill is recorded as a stop, not a crash.
-	if got := stateOf(inst); got != StateStopped {
+	if got := inst.State(); got != StateStopped {
 		t.Errorf("state after Kill() = %v, want %v", got, StateStopped)
 	}
 	if want, got := []State{StateStopping, StateStopped}, drainStates(sub.C); !slices.Equal(got, want) {
@@ -363,7 +367,7 @@ func TestLifecycleExitClassification(t *testing.T) {
 			if !slices.Equal(seen, tt.want) {
 				t.Errorf("states = %v, want %v", seen, tt.want)
 			}
-			if got := stateOf(inst); got != final {
+			if got := inst.State(); got != final {
 				t.Errorf("final state = %v, want %v", got, final)
 			}
 		})
@@ -377,6 +381,9 @@ func TestLifecycleStopWhenNothingRunning(t *testing.T) {
 	if err == nil {
 		t.Fatal("Stop() on a stopped instance returned no error")
 	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("Stop() error = %v, want it to wrap %v", err, ErrInvalidState)
+	}
 	if !strings.Contains(err.Error(), "stopped") {
 		t.Errorf("Stop() error = %q, want it to mention the stopped state", err)
 	}
@@ -388,6 +395,9 @@ func TestLifecycleKillWhenNothingRunning(t *testing.T) {
 	err := inst.Kill()
 	if err == nil {
 		t.Fatal("Kill() on a stopped instance returned no error")
+	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("Stop() error = %v, want it to wrap %v", err, ErrInvalidState)
 	}
 	if !strings.Contains(err.Error(), "stopped") {
 		t.Errorf("Kill() error = %q, want it to mention the stopped state", err)
