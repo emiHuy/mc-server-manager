@@ -2,6 +2,7 @@ package minecraft
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -256,6 +257,9 @@ func TestLifecycleStartRefusedWhileRunning(t *testing.T) {
 	if err == nil {
 		t.Fatal("second Start() returned no error")
 	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("second Start() error = %v, want it to wrap %v", err, ErrInvalidState)
+	}
 	if !strings.Contains(err.Error(), "running") {
 		t.Errorf("second Start() error = %q, want it to mention the running state", err)
 	}
@@ -377,6 +381,9 @@ func TestLifecycleStopWhenNothingRunning(t *testing.T) {
 	if err == nil {
 		t.Fatal("Stop() on a stopped instance returned no error")
 	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("Stop() error = %v, want it to wrap %v", err, ErrInvalidState)
+	}
 	if !strings.Contains(err.Error(), "stopped") {
 		t.Errorf("Stop() error = %q, want it to mention the stopped state", err)
 	}
@@ -388,6 +395,9 @@ func TestLifecycleKillWhenNothingRunning(t *testing.T) {
 	err := inst.Kill()
 	if err == nil {
 		t.Fatal("Kill() on a stopped instance returned no error")
+	}
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("Stop() error = %v, want it to wrap %v", err, ErrInvalidState)
 	}
 	if !strings.Contains(err.Error(), "stopped") {
 		t.Errorf("Kill() error = %q, want it to mention the stopped state", err)

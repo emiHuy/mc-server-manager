@@ -84,11 +84,11 @@ func (inst *Instance) Start() error {
 	defer inst.mu.Unlock()
 
 	if inst.state != StateStopped && inst.state != StateCrashed {
-		return fmt.Errorf("cannot start minecraft server when instance is %s", inst.state)
+		return fmt.Errorf("cannot start minecraft server when instance is %w: %s", ErrInvalidState, inst.state)
 	}
 
 	inst.setStateLocked(StateStarting)
-	slog.Info("minecraft server starting", "state", StateStarting.String())
+	slog.Info("minecraft server starting", "state", StateStarting)
 
 	args := []string{
 		"-Xms" + inst.conf.MinMemory,
@@ -144,12 +144,11 @@ func (inst *Instance) Start() error {
 	return nil
 }
 
-// Stop asks the server to stop and waits for it to exit.
-// If it does not exit within StopTimeout, the process is killed.
-func (inst *Instance) Stop() error {
+// RequestStop sends the stop command and transitions the state to stopping immediately,
+func (inst *Instance) RequestStop() error {
 	err := inst.Send("stop")
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot stop minecraft server: %w", err)
 	}
 
 	inst.mu.Lock()
@@ -159,6 +158,20 @@ func (inst *Instance) Stop() error {
 	if inst.state.live() {
 		inst.setStateLocked(StateStopping)
 	}
+	inst.mu.Unlock()
+
+	return nil
+}
+
+// Stop calls RequestStop and then blocks to wait for the server process to exit
+// If it does not exit within StopTimeout, the process is killed.
+func (inst *Instance) Stop() error {
+	err := inst.RequestStop()
+	if err != nil {
+		return err
+	}
+
+	inst.mu.Lock()
 	cmd := inst.cmd
 	exited := inst.exited
 	inst.mu.Unlock()
@@ -167,7 +180,7 @@ func (inst *Instance) Stop() error {
 		return nil
 	}
 
-	slog.Info("minecraft server stopping", "state", StateStopping.String())
+	slog.Info("minecraft server stopping", "state", StateStopping)
 
 	select {
 	case <-exited:
@@ -194,7 +207,7 @@ func (inst *Instance) Kill() error {
 	defer inst.mu.Unlock()
 
 	if inst.cmd == nil {
-		return fmt.Errorf("cannot kill minecraft server when instance is %s", inst.state)
+		return fmt.Errorf("cannot kill minecraft server: %w: %s", ErrInvalidState, inst.state)
 	}
 
 	prev := inst.state
@@ -234,16 +247,16 @@ func (inst *Instance) Done() <-chan struct{} {
 func (inst *Instance) Send(command string) error {
 	trimmedCommand := strings.TrimSpace(command)
 	if trimmedCommand == "" {
-		return errors.New("cannot send empty command")
+		return fmt.Errorf("cannot send command: %w: empty command", ErrInvalidCommand)
 	} else if strings.Contains(trimmedCommand, "\n") || strings.Contains(trimmedCommand, "\r") {
-		return errors.New("cannot send command containing a line break")
+		return fmt.Errorf("cannot send command: %w: contains line break", ErrInvalidCommand)
 	}
 
 	inst.mu.Lock()
 	if !inst.state.live() {
 		state := inst.state
 		inst.mu.Unlock()
-		return fmt.Errorf("cannot send command when instance is %s", state)
+		return fmt.Errorf("cannot send command: %w: %s", ErrInvalidState, state)
 	}
 	stdin := inst.stdin
 	inst.mu.Unlock()
@@ -374,13 +387,13 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 
 	switch {
 	case stopRequested:
-		slog.Info("minecraft server exited", "state", StateStopped.String(), "error", err)
+		slog.Info("minecraft server exited", "state", StateStopped, "error", err)
 	case wasStarting:
-		slog.Error("minecraft server exited before becoming ready", "state", StateCrashed.String(), "error", err)
+		slog.Error("minecraft server exited before becoming ready", "state", StateCrashed, "error", err)
 	case err == nil:
-		slog.Info("minecraft server exited on its own", "state", StateStopped.String())
+		slog.Info("minecraft server exited on its own", "state", StateStopped)
 	default:
-		slog.Error("minecraft server crashed", "state", StateCrashed.String(), "error", err)
+		slog.Error("minecraft server crashed", "state", StateCrashed, "error", err)
 	}
 }
 
@@ -395,7 +408,7 @@ func (inst *Instance) markReady(e Event) {
 	inst.mu.Unlock()
 
 	if ready {
-		slog.Info("minecraft server ready", "state", StateRunning.String())
+		slog.Info("minecraft server ready", "state", StateRunning)
 		inst.events.Publish(e)
 	}
 }
@@ -415,6 +428,7 @@ func (inst *Instance) setStateLocked(newState State) {
 	}
 
 	inst.state = newState
+	slog.Info("publishing event", "type", EventStateChanged, "new_state", newState)
 	inst.events.Publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
 }
 
@@ -433,6 +447,8 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 		if !ok {
 			continue
 		}
+
+		slog.Info("publishing event", "type", event.Type, "message", event.Message)
 
 		switch event.Type {
 		case EventServerReady:
