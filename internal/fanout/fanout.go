@@ -94,6 +94,14 @@ func (h *Hub[T]) Recent(n int) []T {
 	return h.recentLocked(n)
 }
 
+// Len returns the number of subscribers.
+func (h *Hub[T]) Len() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return len(h.subs)
+}
+
 // recentLocked returns recent history while h.mu is held.
 func (h *Hub[T]) recentLocked(n int) []T {
 	if h.history == nil {

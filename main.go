@@ -53,7 +53,7 @@ func main() {
 		return
 	}
 
-	_, sub := instance.Subscribe(0)
+	_, sub := instance.SubscribeConsole(0)
 	printed := make(chan struct{})
 	go func() {
 		defer close(printed)

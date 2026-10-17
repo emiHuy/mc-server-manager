@@ -358,3 +358,34 @@ func TestHubConcurrent(t *testing.T) {
 		t.Fatal("concurrent hub operations did not finish (possible deadlock)")
 	}
 }
+
+func TestHubLen(t *testing.T) {
+	hub := New[string]("test", 8, 0)
+
+	if got := hub.Len(); got != 0 {
+		t.Fatalf("Len() with no subscribers = %d, want 0", got)
+	}
+
+	_, first := hub.Subscribe(0)
+	_, second := hub.Subscribe(0)
+
+	if got := hub.Len(); got != 2 {
+		t.Errorf("Len() after two subscribes = %d, want 2", got)
+	}
+
+	first.Cancel()
+	if got := hub.Len(); got != 1 {
+		t.Errorf("Len() after one cancel = %d, want 1", got)
+	}
+
+	// A second cancel of the same subscription changes nothing.
+	first.Cancel()
+	if got := hub.Len(); got != 1 {
+		t.Errorf("Len() after cancelling twice = %d, want 1", got)
+	}
+
+	second.Cancel()
+	if got := hub.Len(); got != 0 {
+		t.Errorf("Len() after every cancel = %d, want 0", got)
+	}
+}
