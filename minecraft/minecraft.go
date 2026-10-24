@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
@@ -74,6 +75,12 @@ type Metrics struct {
 	DiskUsedBytes  uint64
 	DiskFreeBytes  uint64
 	DiskTotalBytes uint64
+}
+
+type Status struct {
+	State   State
+	Uptime  time.Duration
+	Players []string
 }
 
 func New(conf config.MinecraftConfig) *Instance {
@@ -262,8 +269,8 @@ func (inst *Instance) Send(command string) error {
 	trimmedCommand := strings.TrimSpace(command)
 	if trimmedCommand == "" {
 		return fmt.Errorf("cannot send command: %w: empty command", ErrInvalidCommand)
-	} else if strings.Contains(trimmedCommand, "\n") || strings.Contains(trimmedCommand, "\r") {
-		return fmt.Errorf("cannot send command: %w: contains line break", ErrInvalidCommand)
+	} else if strings.ContainsFunc(trimmedCommand, unicode.IsControl) {
+		return fmt.Errorf("cannot send command: %w: contains control character", ErrInvalidCommand)
 	}
 
 	inst.mu.Lock()
@@ -306,6 +313,20 @@ func (inst *Instance) Metrics() (Metrics, error) {
 		}
 		return sampler.Sample(metricsSampleWindow)
 	})
+}
+
+// Status returns the server status. Includes state, uptime, and online players.
+func (inst *Instance) Status() Status {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	state := inst.state
+	var uptime time.Duration
+	if !inst.startedAt.IsZero() {
+		uptime = time.Since(inst.startedAt)
+	}
+
+	return Status{State: state, Uptime: uptime, Players: inst.Players()}
 }
 
 // State reads the instance state under its lock.
