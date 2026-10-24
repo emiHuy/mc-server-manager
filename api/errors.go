@@ -23,6 +23,7 @@ var (
 	errBadRequest           = &apiError{http.StatusBadRequest, "invalid request body"}
 	errUnsupportedMediaType = &apiError{http.StatusUnsupportedMediaType, "content type must be application/json"}
 	errInvalidLines         = &apiError{http.StatusBadRequest, "lines must be an integer from 1 to 1000"}
+	errUnauthorized         = &apiError{http.StatusUnauthorized, "unauthorized"}
 )
 
 func (err *apiError) Error() string {

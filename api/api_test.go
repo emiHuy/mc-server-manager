@@ -594,20 +594,24 @@ func TestServerMetrics(t *testing.T) {
 
 // sseReader turns an event stream into a channel of data payloads.
 // Comment lines (": keepalive") and blank separator lines are skipped.
-type sseReader struct{ data chan string }
+type sseReader struct {
+	data chan string
+	err  error // written before data is closed, so read it only after data is closed
+}
 
 func newSSEReader(body io.Reader) *sseReader {
-	ch := make(chan string, 16)
+	r := &sseReader{data: make(chan string, 16)}
 	go func() {
-		defer close(ch)
+		defer close(r.data)
 		sc := bufio.NewScanner(body)
 		for sc.Scan() {
 			if data, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
-				ch <- data
+				r.data <- data
 			}
 		}
+		r.err = sc.Err()
 	}()
-	return &sseReader{data: ch}
+	return r
 }
 
 func (r *sseReader) next(t *testing.T) string {

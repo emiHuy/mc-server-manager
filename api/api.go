@@ -32,7 +32,7 @@ func New(instance *minecraft.Instance, conf config.APIConfig) *Server {
 
 	s.httpServer = &http.Server{
 		Addr:              net.JoinHostPort(conf.Host, strconv.Itoa(conf.Port)),
-		Handler:           s.routes(),
+		Handler:           s.auth(s.routes()),
 		ReadHeaderTimeout: readHeaderTimeout,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
