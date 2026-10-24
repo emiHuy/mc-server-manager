@@ -142,6 +142,24 @@ func TestValidate(t *testing.T) {
 			name:   "api token is optional",
 			mutate: func(c *Config) { c.API.Token = "" },
 		},
+		{
+			name:   "token is optional",
+			mutate: func(c *Config) { c.API.Token = "" },
+		},
+		{
+			name:   "token at the minimum length",
+			mutate: func(c *Config) { c.API.Token = strings.Repeat("a", minTokenLength) },
+		},
+		{
+			name:   "token too short",
+			mutate: func(c *Config) { c.API.Token = strings.Repeat("a", minTokenLength-1) },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "placeholder token",
+			mutate: func(c *Config) { c.API.Token = placeholderToken },
+			want:   []string{"api.token"},
+		},
 	}
 
 	for _, tt := range tests {

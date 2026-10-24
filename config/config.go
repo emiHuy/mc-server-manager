@@ -17,6 +17,8 @@ const (
 	defaultStopTimeout = 30 * time.Second
 	defaultHost        = "127.0.0.1"
 	defaultPort        = 8080
+	minTokenLength     = 16
+	placeholderToken   = "your_generated_token_here"
 )
 
 // Config contains the application configuration.
@@ -114,6 +116,15 @@ func (c *Config) validate() error {
 	}
 	if c.API.Port < 1 || c.API.Port > 65535 {
 		problems = append(problems, "api.port must be between 1 and 65535")
+	}
+
+	if c.API.Token != "" {
+		switch {
+		case c.API.Token == placeholderToken:
+			problems = append(problems, "api.token is still the example placeholder; run `mc-server-manager token` to generate one")
+		case len(c.API.Token) < minTokenLength:
+			problems = append(problems, fmt.Sprintf("api.token must be at least %d characters", minTokenLength))
+		}
 	}
 
 	if len(problems) > 0 {

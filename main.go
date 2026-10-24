@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,6 +14,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "token" {
+		b := make([]byte, 32)
+		rand.Read(b)
+		fmt.Println(hex.EncodeToString(b))
+		return
+	}
+
 	conf, err := config.LoadConfig()
 	if err != nil {
 		slog.Error("config load failed", "error", err)
