@@ -22,6 +22,7 @@ max_memory = "2G"
 
 func validConfig() Config {
 	return Config{
+		API: APIConfig{Host: "127.0.0.1", Port: 8080},
 		Minecraft: MinecraftConfig{
 			Directory:   "/srv/minecraft",
 			Command:     "java",
@@ -127,6 +128,20 @@ func TestValidate(t *testing.T) {
 				c.Options.LogLevel = "not-a-level"
 			},
 		},
+		{
+			name:   "api port too low",
+			mutate: func(c *Config) { c.API.Port = -1 },
+			want:   []string{"api.port"},
+		},
+		{
+			name:   "api port too high",
+			mutate: func(c *Config) { c.API.Port = 70000 },
+			want:   []string{"api.port"},
+		},
+		{
+			name:   "api token is optional",
+			mutate: func(c *Config) { c.API.Token = "" },
+		},
 	}
 
 	for _, tt := range tests {
@@ -202,6 +217,15 @@ log_level = "debug"
 		}
 		if conf.Options.LogLevel != "debug" {
 			t.Errorf("LogLevel = %q, want %q", conf.Options.LogLevel, "debug")
+		}
+		if conf.API.Host != defaultHost || conf.API.Port != defaultPort {
+			t.Errorf("API = %s:%d, want the defaults %s:%d", conf.API.Host, conf.API.Port, defaultHost, defaultPort)
+		}
+		if conf.API.Token != "" {
+			t.Errorf("Token = %q, want empty when omitted", conf.API.Token)
+		}
+		if conf.Minecraft.Autostart {
+			t.Error("Autostart = true, want false when omitted")
 		}
 	})
 

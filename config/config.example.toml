@@ -1,3 +1,7 @@
+[api]
+host = "127.0.0.1"
+port = 8080
+
 [minecraft]
 # Windows paths: use single quotes so backslashes are not treated as escapes.
 directory = '<minecraft server directory path>'
@@ -8,6 +12,7 @@ min_memory = "4G"
 max_memory = "4G"
 gui = false
 stop_timeout = "30s" # needs a unit (s, m); minimum 1s
+autostart = true
 
 [options]
 log_level = "debug"
