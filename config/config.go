@@ -15,12 +15,23 @@ import (
 const (
 	minStopTimeout     = time.Second
 	defaultStopTimeout = 30 * time.Second
+	defaultHost        = "127.0.0.1"
+	defaultPort        = 8080
+	minTokenLength     = 16
+	placeholderToken   = "your_generated_token_here"
 )
 
 // Config contains the application configuration.
 type Config struct {
+	API       APIConfig       `toml:"api"`
 	Minecraft MinecraftConfig `toml:"minecraft"`
 	Options   Options         `toml:"options"`
+}
+
+type APIConfig struct {
+	Host  string `toml:"host"`
+	Port  int    `toml:"port"`
+	Token string `toml:"token"`
 }
 
 // MinecraftConfig contains configuration for launching and managing a Minecraft server.
@@ -32,6 +43,7 @@ type MinecraftConfig struct {
 	MaxMemory   string        `toml:"max_memory"`
 	Gui         bool          `toml:"gui"`
 	StopTimeout time.Duration `toml:"stop_timeout"`
+	Autostart   bool          `toml:"autostart"`
 }
 
 // Options contains application-level options.
@@ -55,6 +67,12 @@ func loadConfig(path string) (Config, error) {
 		return conf, fmt.Errorf("cannot decode config file %s: %w", path, err)
 	}
 
+	if conf.API.Host == "" {
+		conf.API.Host = defaultHost
+	}
+	if conf.API.Port == 0 {
+		conf.API.Port = defaultPort
+	}
 	if conf.Minecraft.StopTimeout == 0 {
 		conf.Minecraft.StopTimeout = defaultStopTimeout
 	}
@@ -95,6 +113,18 @@ func (c *Config) validate() error {
 	}
 	if c.Minecraft.StopTimeout < minStopTimeout {
 		problems = append(problems, fmt.Sprintf("minecraft.stop_timeout must be at least %s", minStopTimeout))
+	}
+	if c.API.Port < 1 || c.API.Port > 65535 {
+		problems = append(problems, "api.port must be between 1 and 65535")
+	}
+
+	if c.API.Token != "" {
+		switch {
+		case c.API.Token == placeholderToken:
+			problems = append(problems, "api.token is still the example placeholder; run `mc-server-manager token` to generate one")
+		case len(c.API.Token) < minTokenLength:
+			problems = append(problems, fmt.Sprintf("api.token must be at least %d characters", minTokenLength))
+		}
 	}
 
 	if len(problems) > 0 {

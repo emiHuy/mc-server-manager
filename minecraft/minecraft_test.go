@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
 )
@@ -356,8 +357,8 @@ func TestSendRejectsBadInput(t *testing.T) {
 	}{
 		{"empty", "", StateRunning, "empty"},
 		{"whitespace only", "  \t ", StateRunning, "empty"},
-		{"embedded newline", "say hi\nstop", StateRunning, "line break"},
-		{"embedded carriage return", "say hi\rstop", StateRunning, "line break"},
+		{"embedded newline", "say hi\nstop", StateRunning, "control character"},
+		{"embedded carriage return", "say hi\rstop", StateRunning, "control character"},
 		{"stopped", "list", StateStopped, "stopped"},
 		{"stopping", "list", StateStopping, "stopping"},
 		{"crashed", "list", StateCrashed, "crashed"},
@@ -501,5 +502,44 @@ func TestMetricsMissingDirectory(t *testing.T) {
 	}
 	if m.State != StateStopped {
 		t.Errorf("State = %v, want the partly filled result to keep %v", m.State, StateStopped)
+	}
+}
+
+func TestStatusStopped(t *testing.T) {
+	inst := New(config.MinecraftConfig{})
+
+	st := inst.Status()
+	if st.State != StateStopped {
+		t.Errorf("State = %v, want %v", st.State, StateStopped)
+	}
+	if st.Uptime != 0 {
+		t.Errorf("Uptime = %v, want 0", st.Uptime)
+	}
+	if len(st.Players) != 0 {
+		t.Errorf("Players = %v, want none", st.Players)
+	}
+}
+
+func TestStatusRunningReportsUptimeAndPlayers(t *testing.T) {
+	inst := newInstanceInState(StateRunning)
+	inst.startedAt = time.Now().Add(-90 * time.Second)
+	inst.players.add("Steve")
+	inst.players.add("Alex")
+
+	st := inst.Status()
+	if st.Uptime < 90*time.Second || st.Uptime > 95*time.Second {
+		t.Errorf("Uptime = %v, want about 90s", st.Uptime)
+	}
+	if want := []string{"Alex", "Steve"}; !slices.Equal(st.Players, want) {
+		t.Errorf("Players = %v, want %v", st.Players, want)
+	}
+}
+
+func TestStatusUptimeIsZeroUnlessRunning(t *testing.T) {
+	for _, state := range []State{StateStopped, StateStarting, StateStopping, StateCrashed} {
+		inst := newInstanceInState(state)
+		if got := inst.Status().Uptime; got != 0 {
+			t.Errorf("state %v: Uptime = %v, want 0", state, got)
+		}
 	}
 }
