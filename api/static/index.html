@@ -1,0 +1,191 @@
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <title>mcsm - Minecraft Server Manager</title>
+        <link rel="stylesheet" href="fonts.css">
+        <link rel="stylesheet" href="style.css">
+        <script defer src="script.js"></script>
+    </head>
+    <body>
+        <div class="dashboard">
+            <aside class="side">
+                <div class="brand">
+                    mcsm
+                    <span>Minecraft server manager</span>
+                </div>
+                <nav>
+                    <button class="on" data-view="overview">Overview</button>
+                </nav>
+                <div class="side-foot">
+                    <span class="mono" id="host">127.0.0.1:25565</span>
+                    <button id="theme">◐</button>
+                </div>
+            </aside>
+            <main>
+                <div class="bar">
+                    <h1 id="view-title">Overview</h1>
+                    <div class="actions">
+                        <button class="btn primary" id="btn-start">Start</button>
+                        <button class="btn" id="btn-stop" disabled>Stop</button>
+                        <button class="btn danger" id="btn-kill" title="Kills the process without saving the world" disabled>Kill</button>
+                        <button class="btn" id="btn-console">
+                            Console
+                            <span class="count" id="badge"></span>
+                        </button>
+                    </div>
+                </div>
+                <div class="strip">
+                    <div class="cell stopped" id="state-cell">
+                        <div class="key">State</div>
+                        <div class="value">
+                            <span class="dot"></span>
+                            <span id="state-value">Stopped</span>
+                        </div>
+                        <div class="sub" id="state-sub">Not running</div>
+                    </div>
+                    <div class="cell">
+                        <div class="key">Uptime</div>
+                        <div class="value" id="uptime-value">--:--:--</div>
+                        <div class="sub" id="uptime-sub">&nbsp;</div>
+                    </div>
+                    <div class="cell">
+                        <div class="key">Players</div>
+                        <div class="value" id="player-value">0</div>
+                        <div class="sub">online</div>
+                    </div>
+                    <div class="cell">
+                        <div class="key">CPU</div>
+                        <div class="value" id="cpu-value">0%</div>
+                        <div class="sub">per core</div>
+                    </div>
+                    <div class="cell">
+                        <div class="key">Memory</div>
+                        <div class="value" id="mem-value">0.0 GB</div>
+                        <div class="sub">resident</div>
+                    </div>
+                    <div class="cell">
+                        <div class="key">Disk</div>
+                        <div class="value" id="disk-value">0%</div>
+                        <div class="sub" id="disk-sub">0 GB free</div>
+                    </div>
+                </div>
+                <div id="view-overview">
+                    <div class="grid">
+                        <section class="panel" id="overview">
+                            <h2>
+                                Events&nbsp;
+                                <span id="events-count">0 total</span>
+                            </h2>
+                            <div class="tabs" id="filters">
+                                <button class="on">All</button>
+                                <button class="">Players</button>
+                                <button class="">Chat</button>
+                                <button class="">Warning</button>
+                                <button class="">Errors</button>
+                                <button class="">State</button>
+                            </div>
+                            <div class="events-head">
+                                <span>Time</span>
+                                <span>Type</span>
+                                <span>Details</span>
+                            </div>
+                            <div class="events" id="events">
+                                <!-- <div class="event type">
+                                    <time class="mono">HH:MM:SS</time>
+                                    <b class="mono">type</b>
+                                    <span>message</span>
+                                </div> -->
+                            </div>
+                        </section>
+                        <div class="side-panels">
+                            <section class="panel">
+                                <h2>
+                                    Players&nbsp;
+                                    <span id="player-count">0 online</span>
+                                </h2>
+                                <table class="player-list">
+                                    <tbody></tbody>
+                                </table>
+                                <p class="empty" id="no-players">No players online.</p>
+                            </section>
+                            <section class="panel">
+                                <h2>Resources</h2>
+                                <dl class="kv">
+                                    <dt>CPU (per core)</dt>
+                                    <dd id="dd-cpu-core">-</dd>
+                                    <dt>CPU (whole machine)</dt>
+                                    <dd id="dd-cpu-machine">-</dd>
+                                    <dt>Cores</dt>
+                                    <dd id="dd-cores">-</dd>
+                                    <dt>Memory</dt>
+                                    <dd id="dd-mem">-</dd>
+                                    <dt>Disk Used</dt>
+                                    <dd id="dd-disk-used">-</dd>
+                                    <dt>Disk Free</dt>
+                                    <dd id="dd-disk-free">-</dd>
+                                    <dt>Disk Total</dt>
+                                    <dd id="dd-disk-total">-</dd>
+                                </dl>
+                                <div class="meter">
+                                    <div id="disk-bytes" class="meter-filled"></div>
+                                </div>
+                            </section>
+                            <section class="panel">
+                                <h2>
+                                    Recent Chat
+                                    <span>last 10</span>
+                                </h2>
+                                <div class="chat" id="chat">
+                                </div>
+                                <p class="empty" id="no-chat">No chat yet.</p>
+                            </section>
+                        </div>
+                    </div>
+                    <div class="charts" id="charts">
+                        <section class="panel">
+                            <h2>
+                                CPU usage (per core)
+                                <span id="cpu-sub">now 0% · avg 0% · max 0%</span>
+                            </h2>
+                            <div class="chart"></div>
+                        </section>
+                        <section class="panel">
+                            <h2>
+                                Memory (resident)
+                                <span id="mem-sub">now 0.0 GB · avg 0.0 GB · max 0.0 GB</span>
+                            </h2>
+                            <div class="chart"></div>
+                        </section>
+                        <section class="panel">
+                            <h2>
+                                Players online
+                                <span id="cpu-sub">now 0 · avg 0 · max 0</span>
+                            </h2>
+                        </section>
+                    </div>
+                </div>
+            </main>
+        </div>
+        <section class="window" id="console-window" role="dialog" aria-label="Server console">
+            <div class="window-bar" id="console-bar">
+                <span class="dot stopped" id="console-dot"></span>
+                <span>Console</span>
+                <span class="window-sub" id="console-sub">stopped</span>
+                <span class="space"></span>
+                <button id="window-clear">Clear</button>
+                <button id="window-max">Maximize</button>
+                <button id="window-close">Close</button>
+            </div>
+            <div class="log mono" id="log"></div>
+            <div class="quick" id="quick-cmd">
+                <button type="button">save-all</button>
+            </div>
+            <form class="cmd mono" onsubmit="return false">
+                <b>></b>
+                <input id="cmd" autocomplete="off" spellcheck="false" placeholder="Minecraft command e.g. say Hello!">
+                <button class="btn" id="send" type="button">Send</button>
+            </form>
+        </section>
+    </body>
+</html>
