@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/emiHuy/mc-server-manager/api"
 	"github.com/emiHuy/mc-server-manager/config"
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case <-sig:

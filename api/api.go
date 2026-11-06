@@ -3,7 +3,9 @@ package api
 
 import (
 	"context"
+	"embed"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +17,9 @@ import (
 )
 
 const readHeaderTimeout = 5 * time.Second
+
+//go:embed static
+var webFiles embed.FS
 
 type Server struct {
 	httpServer *http.Server
@@ -42,7 +47,7 @@ func New(instance *minecraft.Instance, conf config.APIConfig) *Server {
 }
 
 func (s *Server) Run() error {
-	slog.Info("api server listening", "addr", s.httpServer.Addr)
+	slog.Info("api server listening", "addr", s.httpServer.Addr, "dashboard", dashboardURL(s.httpServer.Addr))
 	err := s.httpServer.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -68,6 +73,13 @@ func (s *Server) routes() *http.ServeMux {
 	handle(mux, http.MethodGet, "/api/server/console/stream", s.handleServerConsoleStream)
 	handle(mux, http.MethodGet, "/api/server/metrics/stream", s.handleServerMetricsStream)
 
+	site, err := fs.Sub(webFiles, "static")
+	if err != nil {
+		panic(err) // only fails on an invalid path; the embed itself is checked at compile time
+	}
+	mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServerFS(site)))
+	mux.Handle("GET /dashboard", http.RedirectHandler("/dashboard/", http.StatusMovedPermanently))
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errNotFound)
 	})
@@ -83,4 +95,17 @@ func handle(mux *http.ServeMux, method, path string, handler http.HandlerFunc) {
 		w.Header().Set("Allow", method)
 		writeError(w, r, errMethodNotAllowed)
 	})
+}
+
+// dashboardURL turns a listen address like ":8080" or "0.0.0.0:8080" into a URL you can open in a browser.
+func dashboardURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://" + addr
+	}
+
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/dashboard"
 }

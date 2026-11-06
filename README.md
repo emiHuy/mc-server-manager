@@ -15,13 +15,13 @@ A small Go program that runs a self-hosted Minecraft server and keeps track of i
 - Runs on Windows and Linux.
 
 ## Requirements
- 
+
 - Go (see `go.mod` for the version)
 - Java, and a Minecraft server jar with its EULA accepted
 - Windows or Linux
 
 ## Build and run
- 
+
 ```
 go build
 ./mc-server-manager
@@ -50,6 +50,8 @@ If the server exits before it finishes loading, for example because the EULA isn
 ### API
 
 If a token is set, send `Authorization: Bearer <token>` with every request.
+Open the dashboard and paste the token when asked. It's saved in the browser's local storage under the key `mcsm.token`.
+
 
 | Method | Path | Description |
 |---|---|---|
@@ -66,15 +68,15 @@ If a token is set, send `Authorization: Bearer <token>` with every request.
 Errors are JSON: `{"error": "..."}`. An action that doesn't fit the current state, such as stopping a stopped server, returns `409`.
 
 ## How it works
- 
+
 ### State
- 
+
 ```
 stopped -> starting -> running -> stopping -> stopped
                 |          |          |
                 +----------+----------+--> crashed
 ```
- 
+
 - `starting` lasts until the console prints the "Done" line, not just until the process launches.
 - A requested stop always ends as `stopped`, including a stop that had to be killed.
 - A clean exit with no stop requested ends as `stopped` if the server was ready, and as `crashed` if it was still loading.
@@ -82,7 +84,7 @@ stopped -> starting -> running -> stopping -> stopped
 
 
 ### Layout
- 
+
 | Path | Contents |
 |---|---|
 | `main.go` | Wiring, the `token` command, and shutdown. |
@@ -91,9 +93,9 @@ stopped -> starting -> running -> stopping -> stopped
 | `minecraft/` | The server instance: process lifecycle, console, events, players, and metrics. |
 | `internal/fanout/` | A generic publish and subscribe hub. Slow subscribers lose their oldest items and never block the publisher. |
 | `internal/sysmetrics/` | Process CPU and memory, and disk usage. |
- 
+
 ## Known limitations
- 
+
 - The API is plain HTTP, so the token is visible to anyone sniffing the network. With no token and a non-loopback host, anyone on the network can control the server.
 - A slow stream client can miss messages. After reconnecting, fetch `/api/server/status` to resync.
 - Readiness detection depends on Minecraft's exact "Done (...)! For help, type "help"" line. It is checked on vanilla only.
@@ -102,18 +104,19 @@ stopped -> starting -> running -> stopping -> stopped
 - The player list is built from join and leave messages, so it can drift if the manager misses console output.
 
 ## Development
- 
+
 ```
 go test ./...
 go vet ./...
 ```
- 
+
 CI builds, vets, and tests on Linux and Windows, and also checks formatting and runs the race detector on Linux.
 
 ## TODO
- 
+
 - `/api/server/restart`
 - swagger
-- dashboard
 - schedule backups
 - schedule online/offline hours
+- cli
+- security (check commands sent, bind to ip of tailnet device and not 0:0:0:0)
