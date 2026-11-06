@@ -1,33 +1,75 @@
-const $ = (selector) => document.querySelector(selector);
+// ----- Config & State -----
 const KEY = "mcsm.token";
-const STATES = ["stopped", "starting", "running", "stopping", "crashed"];
+const MC_PORT = 25565;
 const MAX_FAILURES = 3;
-const players = new Map();
+const STATES = ["stopped", "starting", "running", "stopping", "crashed"];
+const GB = 1024 ** 3;
+const WINDOW_MS = 60 * 15 * 1000; // longest span the charts show
+const MIN_SPAN_MS = 2 * 60 * 1000; // shortest span the charts show
+
+// maps events to filter tabs
+const GROUPS = {
+  state_changed: "state",
+  server_ready: "state",
+  player_joined: "players",
+  player_left: "players",
+  player_chat: "chat",
+  server_warning: "warnings",
+  server_error: "errors",
+};
+
+const players = new Map(); // name -> start time
+const samples = []; // metrics history { t, cpu, memory, players }
 const counts = { warnings: 0, errors: 0 };
 
-let eventsCount = 0;
-
-let disconnected = false;
 let state = "stopped";
 let startedAt = 0;
+let eventsCount = 0;
+let unread = 0;
+let replayUntil = 0; // ignore console lines the server replays on connect
+let disconnected = false;
 let toastTimer;
 
-const samples = []; // { t, cpu, mem, players }
+// ----- Helpers -----
 
-class AuthError extends Error {}
-
-const MC_PORT = 25565;
-$("#addr").textContent = `${location.hostname}:${MC_PORT}`;
-
-function getToken() {
-  let token = localStorage.getItem(KEY);
-  if (!token) {
-    token = (prompt("Enter your access token") || "").trim();
-    if (token) {
-      localStorage.setItem(KEY, token);
-    }
+const $ = (selector) => {
+  const element = document.querySelector(selector);
+  if (!element) {
+    throw new Error("missing element: " + selector);
   }
-  return token;
+  return element;
+};
+
+const fmtGB = (b) => (b / GB).toFixed(1) + " GB";
+
+const fmtTime = (iso) =>
+  new Date(iso).toLocaleTimeString([], { hour12: false });
+
+const fmtUptime = (s) =>
+  [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60]
+    .map((n) => String(n).padStart(2, "0"))
+    .join(":");
+
+function fmtDuration(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s >= 3600) {
+    return `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m`;
+  }
+  if (s >= 60) {
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+  return s + "s";
+}
+
+function fmtAgo(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+
+  if (h === 0) return `${m}m ago`;
+  return m === 0 ? `${h}h ago` : `${h}h ${m}m ago`;
 }
 
 function toast(msg) {
@@ -40,6 +82,34 @@ function toast(msg) {
   }, 4000);
 }
 
+// Appends a row, trims old ones, and follows the newest only if you're at the bottom.
+function addToLog(list, row, max = 400) {
+  const stuck = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
+  list.append(row);
+  while (list.children.length > max) {
+    list.firstChild.remove();
+  }
+  if (stuck) {
+    list.scrollTop = list.scrollHeight;
+  }
+}
+
+// ----- API & Streaming -----
+
+class AuthError extends Error {}
+
+function getToken() {
+  let token = localStorage.getItem(KEY);
+  if (!token) {
+    token = (prompt("Enter your access token") || "").trim();
+    if (token) {
+      localStorage.setItem(KEY, token);
+    }
+  }
+  return token;
+}
+
+// Adds the token, handles 401, turns error responses into thrown Errors.
 async function authFetch(path, { method = "GET", body } = {}) {
   const res = await fetch(path, {
     method,
@@ -55,6 +125,7 @@ async function authFetch(path, { method = "GET", body } = {}) {
     location.reload();
     throw new AuthError("unauthorized");
   }
+
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -71,14 +142,7 @@ async function api(path, opts) {
   return res.status === 204 ? null : res.json();
 }
 
-function giveUp() {
-  if (disconnected) {
-    return;
-  }
-  disconnected = true;
-  toast("Disconnected from the manager.");
-}
-
+// Reads a Server-Sent Events endpoint with fetch. Reconnects with a growing delay, gives up after MAX_FAILURES in a row.
 async function stream(path, onMessage, onOpen, onStatus) {
   let failures = 0;
 
@@ -127,16 +191,26 @@ async function stream(path, onMessage, onOpen, onStatus) {
       }
 
       console.error(path, e);
+
       failures++;
       if (failures >= MAX_FAILURES) {
         onStatus?.("offline");
         giveUp();
-        return; // stop making requests
+        return;
       }
+
       onStatus?.("retrying");
     }
     await new Promise((r) => setTimeout(r, 2000 * failures));
   }
+}
+
+function giveUp() {
+  if (disconnected) {
+    return;
+  }
+  disconnected = true;
+  toast("Disconnected from the manager.");
 }
 
 function setConnection(s) {
@@ -145,47 +219,125 @@ function setConnection(s) {
     retrying: "Reconnecting…",
     offline: "Disconnected",
   }[s];
+
   $("#conn").dataset.state = s;
-  if (s !== "live") markStale();
+
+  if (s !== "live") {
+    markStale();
+  }
 }
 
+// don't keep showing "Running" when we can't know
 function markStale() {
-  // don't keep showing "Running" when we can't know
   $("#state-value").textContent = "Unknown";
   for (const id of ["#state-dot", "#console-dot"])
     $(id).classList.remove(...STATES);
 }
 
-function recordSample(m) {
-  samples.push({
-    t: Date.now(),
-    cpu: m.cpu_percent,
-    mem: m.memory_bytes,
-    players: m.players_online,
+// ----- Server State -----
+
+function applyState(s) {
+  if (s === "stopped" && state !== "stopped") {
+    resetRun();
+  }
+
+  if (s === "crashed") {
+    // no player_left events are sent when the process dies
+    players.clear();
+    renderPlayers();
+  }
+
+  state = s;
+
+  for (const id of ["#state-dot", "#console-dot"]) {
+    $(id).classList.remove(...STATES);
+    $(id).classList.add(s);
+  }
+
+  $("#state-value").textContent = s[0].toUpperCase() + s.slice(1);
+  $("#console-sub").textContent = s;
+
+  $("#btn-start").disabled = !(s === "stopped" || s === "crashed");
+  $("#btn-stop").disabled = !(s === "starting" || s === "running");
+  $("#btn-kill").disabled = s === "stopped";
+}
+
+// Clears everything that belongs to the run that just ended
+function resetRun() {
+  startedAt = 0;
+  eventsCount = 0;
+  counts.warnings = 0;
+  counts.errors = 0;
+  players.clear();
+  renderPlayers();
+
+  for (const element of document.querySelectorAll("[data-count]")) {
+    element.textContent = "";
+  }
+
+  $("#chat").replaceChildren();
+  $("#no-chat").hidden = false;
+  $("#events").replaceChildren();
+  $("#events-count").textContent = "0";
+
+  const empty = {
+    "#uptime-value": "--:--:--",
+    "#cpu-value": "0%",
+    "#cpu-sub": "0 of 0 cores",
+    "#mem-value": "0.0 GB",
+    "#disk-value": "0%",
+    "#disk-sub": "0.0 GB free",
+    "#dd-cpu-core": "-",
+    "#dd-cpu-machine": "-",
+    "#dd-cores": "-",
+    "#dd-mem": "-",
+    "#dd-disk-used": "-",
+    "#dd-disk-free": "-",
+    "#dd-disk-total": "-",
+  };
+
+  for (const [selector, text] of Object.entries(empty)) {
+    $(selector).textContent = text;
+  }
+
+  $("#disk-meter").style.width = "0";
+  $("#disk-meter").classList.remove("hot");
+
+  ["cpu", "mem", "players"].forEach((prefix) => {
+    $(`#${prefix}-chart`).replaceChildren();
+    $(`#${prefix}-max`).textContent = "";
+    $(`#${prefix}-mid`).textContent = "";
   });
 
-  // drop readings older than the window, so memory stays flat
-  const cutoff = Date.now() - WINDOW_MS;
-  while (samples.length && samples[0].t < cutoff) samples.shift();
+  $("#cpu-stats").textContent = "now 0% · avg 0% · max 0%";
+  $("#mem-stats").textContent = "now 0.0 GB · avg 0.0 GB · max 0.0 GB";
+  $("#players-stats").textContent = "now 0 · avg 0 · max 0";
 }
 
-function init() {
-  stream("/api/server/events", handleEvent, () =>
-    loadStatus().catch((e) => toast(e.message), setConnection),
-  );
+// The snapshot the streams can't replay: state, uptime and who is online.
+async function loadStatus() {
+  const res = await api("/api/server/status");
+  applyState(res.state);
 
-  stream("/api/server/metrics/stream", handleMetrics);
+  startedAt = res.uptime_seconds ? Date.now() - res.uptime_seconds * 1000 : 0;
 
-  stream(
-    "/api/server/console/stream?lines=200",
-    (d) => logLine(d.line),
-    () => {
-      $("#log").replaceChildren(); // the server resends recent lines on connect, so clear first
-      clearUnread();
-      replayUntil = Date.now() + 1000;
-    },
-  );
+  players.clear();
+  for (const p of res.players ?? []) {
+    players.set(p, Date.now());
+  }
+  renderPlayers();
 }
+
+async function act(path) {
+  try {
+    await api(path, { method: "POST" });
+    await loadStatus();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// ----- Events, Players & Chat -----
 
 function handleEvent(e) {
   switch (e.type) {
@@ -215,146 +367,13 @@ function handleEvent(e) {
 }
 
 function bump(group) {
-  if (!(group in counts)) return;
+  if (!(group in counts)) {
+    return;
+  }
+
   counts[group]++;
   $(`[data-count="${group}"]`).textContent = `(${counts[group]})`;
 }
-
-function chatRow(e) {
-  const row = document.createElement("div");
-
-  const body = document.createElement("span");
-  const name = document.createElement("b");
-  name.textContent = `${e.player}:`;
-  body.append(name, " " + e.message);
-
-  const time = document.createElement("time");
-  time.textContent = new Date(e.timestamp).toLocaleTimeString([], {
-    hour12: false,
-  });
-
-  row.append(body, time);
-  return row;
-}
-
-async function loadStatus() {
-  const res = await api("/api/server/status");
-  applyState(res.state);
-  if (res.uptime_seconds) {
-    startedAt = Date.now() - res.uptime_seconds * 1000;
-  }
-  players.clear();
-  for (const p of res.players ?? []) {
-    players.set(p, Date.now());
-  }
-  renderPlayers();
-}
-
-function renderPlayers() {
-  const rows = [...players.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, since]) => {
-      const tr = document.createElement("tr");
-
-      const nameCell = document.createElement("td");
-      nameCell.textContent = name;
-
-      const timeCell = document.createElement("td");
-      timeCell.dataset.since = since;
-      timeCell.textContent = fmtDuration(Date.now() - since);
-
-      tr.append(nameCell, timeCell);
-      return tr;
-    });
-  $("#player-list").replaceChildren(...rows);
-  $("#no-players").hidden = players.size > 0;
-  $("#player-count").textContent = `${players.size} online`;
-  $("#player-value").textContent = players.size;
-}
-
-function fmtDuration(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s >= 3600) {
-    return `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m`;
-  }
-  if (s >= 60) {
-    return `${Math.floor(s / 60)}m ${s % 60}s`;
-  }
-  return s + "s";
-}
-
-setInterval(() => {
-  for (const cell of document.querySelectorAll("#player-list td[data-since]")) {
-    cell.textContent = fmtDuration(Date.now() - Number(cell.dataset.since));
-  }
-}, 1000);
-
-function setStateClass(dot, state) {
-  dot.classList.remove(...STATES);
-  dot.classList.add(state);
-}
-
-let prevState = null;
-function applyState(s) {
-  if (prevState !== "stopped" && s === "stopped") {
-    resetRun();
-  }
-
-  prevState = state;
-  state = s;
-
-  setStateClass($("#state-dot"), s);
-  setStateClass($("#console-dot"), s);
-
-  $("#state-value").textContent = s[0].toUpperCase() + s.slice(1);
-  $("#console-sub").textContent = s;
-
-  $("#btn-start").disabled = !(s === "stopped" || s === "crashed");
-  $("#btn-stop").disabled = !(s === "starting" || s === "running");
-  $("#btn-kill").disabled = s === "stopped";
-}
-
-function resetRun() {
-  counts.warnings = counts.errors = 0;
-  for (const s of document.querySelectorAll("[data-count]")) {
-    s.textContent = "";
-  }
-  startedAt = 0;
-  players.clear();
-  renderPlayers();
-  $("#chat").replaceChildren();
-  $("#no-chat").hidden = false; // show "No chat yet" again, if you have that element
-  $("#events").replaceChildren();
-
-  $("#uptime-value").textContent = "--:--:--";
-  $("#cpu-value").textContent = "0%";
-  $("#cpu-sub").textContent = "0 of 0 cores";
-  $("#mem-value").textContent = "0.0 GB";
-  $("#disk-value").textContent = "0%";
-  $("#disk-sub").textContent = "0.0 GB free";
-
-  // resources table
-  $("#dd-cpu-core").textContent = "-";
-  $("#dd-cpu-machine").textContent = "-";
-  $("#dd-cores").textContent = "-";
-  $("#dd-mem").textContent = "-";
-  $("#dd-disk-used").textContent = "-";
-  $("#dd-disk-free").textContent = "-";
-  $("#dd-disk-total").textContent = "-";
-
-  $("#disk-meter").style.width = "0";
-  $("#disk-meter").classList.remove("hot");
-}
-
-const GROUPS = {
-  state_changed: "state",
-  server_ready: "state",
-  player_joined: "players",
-  player_left: "players",
-  player_chat: "chat",
-  server_warning: "warnings",
-  server_error: "errors",
-};
 
 function eventRow(e) {
   const labels = {
@@ -374,9 +393,7 @@ function eventRow(e) {
 
   const time = document.createElement("time");
   time.className = "mono";
-  time.textContent = new Date(e.timestamp).toLocaleTimeString([], {
-    hour12: false,
-  });
+  time.textContent = fmtTime(e.timestamp);
 
   const type = document.createElement("b");
   type.className = "mono";
@@ -389,67 +406,55 @@ function eventRow(e) {
   return row;
 }
 
-function addToLog(list, row, max = 400) {
-  const stuck = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
-  list.append(row);
-  while (list.children.length > max) {
-    list.firstChild.remove();
-  }
-  if (stuck) {
-    list.scrollTop = list.scrollHeight; // only follow if the user is at the bottom
-  }
+function chatRow(e) {
+  const row = document.createElement("div");
+
+  const body = document.createElement("span");
+  const name = document.createElement("b");
+  name.textContent = `${e.player}:`;
+  body.append(name, " " + e.message);
+
+  const time = document.createElement("time");
+  time.textContent = fmtTime(e.timestamp);
+
+  row.append(body, time);
+  return row;
 }
 
-async function loadStatus() {
-  const res = await api("/api/server/status");
-  applyState(res.state);
+function renderPlayers() {
+  const rows = [...players.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, since]) => {
+      const tr = document.createElement("tr");
+
+      const nameCell = document.createElement("td");
+      nameCell.textContent = name;
+
+      const timeCell = document.createElement("td");
+      timeCell.dataset.since = since;
+      timeCell.textContent = fmtDuration(Date.now() - since);
+
+      tr.append(nameCell, timeCell);
+      return tr;
+    });
+
+  $("#player-list").replaceChildren(...rows);
+  $("#no-players").hidden = players.size > 0;
+  $("#player-count").textContent = `${players.size} online`;
+  $("#player-value").textContent = players.size;
 }
 
-async function act(path) {
-  try {
-    await api(path, { method: "POST" });
-    await loadStatus();
-  } catch (e) {
-    toast(e.message);
-  }
-}
-$("#btn-start").onclick = () => act("/api/server/start");
-$("#btn-stop").onclick = () => act("/api/server/stop");
-$("#btn-kill").onclick = () => act("/api/server/kill");
-
-$("#theme").onclick = () => {
-  const root = document.documentElement;
-  const next = root.dataset.theme == "dark" ? "light" : "dark";
-  root.dataset.theme = next;
-  localStorage.setItem("mcsm.theme", next);
-};
-
-$("#event-filters").addEventListener("click", (ev) => {
-  const btn = ev.target.closest("button[data-filter]");
-  if (!btn) return;
-
-  for (const b of $("#event-filters").children)
-    b.classList.toggle("on", b === btn);
-  $("#events").dataset.filter = btn.dataset.filter;
-  $("#events").scrollTop = $("#events").scrollHeight; // jump to the newest row
-});
-
-init();
-
-const GB = 1024 ** 3;
-const fmtGB = (b) => (b / GB).toFixed(1) + " GB";
-const fmtUptime = (s) =>
-  [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60]
-    .map((n) => String(n).padStart(2, "0"))
-    .join(":");
+// ----- Metrics & Charts -----
 
 function handleMetrics(m) {
-  if (state === "stopped") {
-    return;
-  }
   if (m.state !== state) {
     applyState(m.state); // safety net if an event was missed
   }
+
+  if (state === "stopped") {
+    return;
+  }
+
   if (m.uptime_seconds > 0) {
     startedAt = Date.now() - m.uptime_seconds * 1000;
   }
@@ -458,7 +463,7 @@ function handleMetrics(m) {
     ? (m.disk_used_bytes / m.disk_total_bytes) * 100
     : 0;
 
-  // metrics cards
+  // statis strip
   $("#cpu-value").textContent = Math.round(m.cpu_machine_percent) + "%";
   $("#cpu-sub").textContent =
     `${(m.cpu_percent / 100).toFixed(1)} of ${m.cpu_cores} cores`;
@@ -482,118 +487,61 @@ function handleMetrics(m) {
   drawCharts();
 }
 
-setInterval(() => {
-  const live = state === "running" || state === "stopping";
-  if (live) {
-    $("#uptime-value").textContent = startedAt
-      ? fmtUptime(Math.floor((Date.now() - startedAt) / 1000))
-      : "--:--:--";
-  }
-}, 1000);
+function recordSample(m) {
+  samples.push({
+    t: Date.now(),
+    cpu: m.cpu_percent,
+    mem: m.memory_bytes,
+    players: m.players_online,
+  });
 
-let unread = 0;
-let replayUntil = 0; // ignore the lines the server replays when the stream connects
-
-function addUnread() {
-  unread++;
-  $("#unread").textContent = unread > 99 ? "99+" : unread;
-  $("#unread").hidden = false;
-}
-
-function clearUnread() {
-  unread = 0;
-  $("#unread").hidden = true;
-}
-
-function logLine(line, cls = "") {
-  const div = document.createElement("div");
-  div.textContent = line;
-  div.className =
-    cls ||
-    (line.includes("/WARN]")
-      ? "warn"
-      : line.includes("/ERROR]")
-        ? "error"
-        : "");
-  addToLog($("#log"), div, 500);
-
-  if ($("#console-window").hidden) {
-    if ($("#console-window").hidden && Date.now() > replayUntil) addUnread();
+  // drop readings older than the window, so memory stays flat
+  const cutoff = Date.now() - WINDOW_MS;
+  while (samples.length && samples[0].t < cutoff) {
+    samples.shift();
   }
 }
 
-$("#btn-console").onclick = () => {
-  const win = $("#console-window");
-  win.hidden = !win.hidden;
-  if (!win.hidden) {
-    unread = 0;
-    $("#unread").hidden = true;
-    $("#log").scrollTop = $("#log").scrollHeight;
-    $("#cmd").focus();
-  }
-};
+const niceMax = (v, step, min) =>
+  Math.max(min, Math.ceil((v * 1.15) / step) * step);
 
-async function sendCommand() {
-  const input = $("#cmd");
-  const command = input.value.trim();
-  if (!command) return;
-  input.value = "";
-  logLine("> " + command, "echo");
-  try {
-    await api("/api/server/command", { method: "POST", body: { command } });
-  } catch (e) {
-    toast(e.message);
-  }
-}
-$("#send").onclick = sendCommand;
-$("#cmd").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") sendCommand();
-});
-
-function closeConsole() {
-  $("#console-window").hidden = true;
-}
-
-$("#console-clear").onclick = () => {
-  $("#log").replaceChildren();
-};
-
-let savedStyle = null;
-
-$("#console-max").onclick = () => {
-  const consoleWin = $("#console-window");
-  const maximize = !consoleWin.classList.contains("max");
-
-  if (maximize) {
-    savedStyle = consoleWin.getAttribute("style"); // whatever drag or resize left behind
-    consoleWin.removeAttribute("style");
-    consoleWin.classList.add("max");
-  } else {
-    consoleWin.classList.remove("max");
-    if (savedStyle) consoleWin.setAttribute("style", savedStyle);
-    else consoleWin.removeAttribute("style");
+function drawCharts() {
+  if (document.hidden || samples.length < 2) {
+    return;
   }
 
-  $("#console-max").textContent = maximize ? "Restore" : "Maximize";
-};
-$("#console-close").onclick = closeConsole;
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#console-window").hidden) closeConsole();
-});
+  const maxOf = (pick) => Math.max(...samples.map(pick));
 
-const MIN_SPAN_MS = 2 * 60 * 1000; // never zoom in further than 2 minutes
-
-const WINDOW_MS = 60 * 15 * 1000;
-
-function fmtAgo(ms) {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s ago`;
-
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-
-  if (h === 0) return `${m}m ago`;
-  return m === 0 ? `${h}h ago` : `${h}h ${m}m ago`;
+  drawChart(
+    "cpu",
+    (s) => s.cpu,
+    niceMax(
+      maxOf((s) => s.cpu),
+      25,
+      100,
+    ),
+    (v) => Math.round(v) + "%",
+  );
+  drawChart(
+    "mem",
+    (s) => s.mem,
+    niceMax(
+      maxOf((s) => s.mem),
+      GB / 2,
+      2 * GB,
+    ),
+    fmtGB,
+  );
+  drawChart(
+    "players",
+    (s) => s.players,
+    niceMax(
+      maxOf((s) => s.players),
+      2,
+      4,
+    ),
+    (v) => String(Math.round(v)),
+  );
 }
 
 function drawChart(prefix, pick, max, fmt) {
@@ -648,45 +596,65 @@ function drawChart(prefix, pick, max, fmt) {
   }
 }
 
-const niceMax = (v, step, min) =>
-  Math.max(min, Math.ceil((v * 1.15) / step) * step);
+// ----- Console -----
 
-function drawCharts() {
-  if (document.hidden || samples.length < 2) return;
-  const maxOf = (pick) => Math.max(...samples.map(pick));
+function logLine(line, cls = "") {
+  const div = document.createElement("div");
+  div.textContent = line;
+  div.className =
+    cls ||
+    (line.includes("/WARN]")
+      ? "warn"
+      : line.includes("/ERROR]")
+        ? "error"
+        : "");
+  addToLog($("#log"), div, 500);
 
-  drawChart(
-    "cpu",
-    (s) => s.cpu,
-    niceMax(
-      maxOf((s) => s.cpu),
-      25,
-      100,
-    ),
-    (v) => Math.round(v) + "%",
-  );
-  drawChart(
-    "mem",
-    (s) => s.mem,
-    niceMax(
-      maxOf((s) => s.mem),
-      GB / 2,
-      2 * GB,
-    ),
-    fmtGB,
-  );
-  drawChart(
-    "players",
-    (s) => s.players,
-    niceMax(
-      maxOf((s) => s.players),
-      2,
-      4,
-    ),
-    (v) => String(Math.round(v)),
-  );
+  if ($("#console-window").hidden && Date.now() > replayUntil) {
+    addUnread();
+  }
 }
 
+function addUnread() {
+  unread++;
+  $("#unread").textContent = unread > 99 ? "99+" : unread;
+  $("#unread").hidden = false;
+}
+
+function clearUnread() {
+  unread = 0;
+  $("#unread").hidden = true;
+}
+
+function openConsole() {
+  $("#console-window").hidden = false;
+  clearUnread();
+  $("#log").scrollTop = $("#log").scrollHeight;
+  $("#cmd").focus();
+}
+
+function closeConsole() {
+  $("#console-window").hidden = true;
+}
+
+async function sendCommand() {
+  const input = $("#cmd");
+  const command = input.value.trim();
+  if (!command) {
+    return;
+  }
+
+  input.value = "";
+  logLine("> " + command, "echo");
+
+  try {
+    await api("/api/server/command", { method: "POST", body: { command } });
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// Drag by the title bar, resize from the corner grip, maximize and restore.
 function setupConsoleWindow() {
   const win = $("#console-window");
   const view = document.documentElement;
@@ -747,6 +715,109 @@ function setupConsoleWindow() {
       Math.min(view.clientHeight - r.top, r.height + ev.clientY - e.clientY) +
       "px";
   });
+
+  $("#console-max").onclick = () => {
+    const maxed = win.classList.toggle("max");
+
+    if (maxed) {
+      win.dataset.saved = win.getAttribute("style") ?? "";
+      consoleWin.removeAttribute("style");
+    } else {
+      win.setAttribute("style", win.dataset.saved);
+    }
+
+    $("#console-max").textContent = maxed ? "Restore" : "Maximize";
+  };
 }
 
-setupConsoleWindow();
+// ----- Startup -----
+
+function bindControls() {
+  $("#btn-start").onclick = () => act("/api/server/start");
+  $("#btn-stop").onclick = () => act("/api/server/stop");
+  $("#btn-kill").onclick = () => act("/api/server/kill");
+
+  $("#theme").onclick = () => {
+    const root = document.documentElement;
+    const next = root.dataset.theme == "dark" ? "light" : "dark";
+    root.dataset.theme = next;
+    localStorage.setItem("mcsm.theme", next);
+  };
+
+  $("#event-filters").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-filter]");
+    if (!btn) {
+      return;
+    }
+
+    for (const b of $("#event-filters").children) {
+      b.classList.toggle("on", b === btn);
+    }
+
+    $("#events").dataset.filter = btn.dataset.filter;
+    $("#events").scrollTop = $("#events").scrollHeight; // jump to the newest row
+  });
+
+  $("#btn-console").onclick = () => {
+    $("#console-window").hidden ? openConsole() : closeConsole();
+  };
+  $("#console-close").onclick = closeConsole;
+  $("#console-clear").onclick = () => {
+    $("#log").replaceChildren();
+  };
+
+  $("#send").onclick = sendCommand;
+  $("#cmd").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      sendCommand();
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#console-window").hidden) {
+      closeConsole();
+    }
+  });
+}
+
+function startTimers() {
+  setInterval(() => {
+    for (const cell of document.querySelectorAll(
+      "#player-list td[data-since]",
+    )) {
+      cell.textContent = fmtDuration(Date.now() - Number(cell.dataset.since));
+    }
+
+    if (state === "running" || state === "stopping") {
+      $("#uptime-value").textContent = startedAt
+        ? fmtUptime(Math.floor((Date.now() - startedAt) / 1000))
+        : "--:--:--";
+    }
+  }, 1000);
+}
+
+function init() {
+  $("#addr").textContent = `${location.hostname}:${MC_PORT}`;
+
+  bindControls();
+  setupConsoleWindow();
+  startTimers();
+
+  stream("/api/server/events", handleEvent, () =>
+    loadStatus().catch((e) => toast(e.message), setConnection),
+  );
+
+  stream("/api/server/metrics/stream", handleMetrics);
+
+  stream(
+    "/api/server/console/stream?lines=200",
+    (d) => logLine(d.line),
+    () => {
+      $("#log").replaceChildren(); // the server resends recent lines on connect, so clear first
+      clearUnread();
+      replayUntil = Date.now() + 1000;
+    },
+  );
+}
+
+init();
