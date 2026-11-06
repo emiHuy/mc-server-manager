@@ -70,8 +70,8 @@ func TestAuth(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", resp.StatusCode, tt.want)
 			}
 			if tt.want == http.StatusUnauthorized {
-				if got := resp.Header.Get("WWW-Authenticate"); got != "Bearer" {
-					t.Errorf("WWW-Authenticate = %q, want %q", got, "Bearer")
+				if got := resp.Header.Get("WWW-Authenticate"); got != `Bearer realm="mcsm"` {
+					t.Errorf("WWW-Authenticate = %q, want %q", got, `Bearer realm="mcsm"`)
 				}
 				if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
 					t.Error("an unauthorized request must not start a stream")
