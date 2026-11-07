@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/emiHuy/mc-server-manager/internal/apitypes"
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
 
@@ -19,7 +20,7 @@ const (
 
 func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 	status := s.instance.Status()
-	writeJSON(w, http.StatusOK, StatusResponse{
+	writeJSON(w, http.StatusOK, apitypes.StatusResponse{
 		State:         status.State.String(),
 		UptimeSeconds: int64(status.Uptime.Seconds()),
 		Players:       status.Players,
@@ -33,7 +34,7 @@ func (s *Server) handleServerStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, StateResponse{
+	writeJSON(w, http.StatusAccepted, apitypes.StateResponse{
 		State: minecraft.StateStarting.String(),
 	})
 }
@@ -45,7 +46,7 @@ func (s *Server) handleServerStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, StateResponse{
+	writeJSON(w, http.StatusOK, apitypes.StateResponse{
 		State: minecraft.StateStopped.String(),
 	})
 }
@@ -57,7 +58,7 @@ func (s *Server) handleServerKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, StateResponse{
+	writeJSON(w, http.StatusAccepted, apitypes.StateResponse{
 		State: minecraft.StateStopped.String(),
 	})
 }
@@ -71,7 +72,7 @@ func (s *Server) handleServerCommand(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxCommandBody)
 
-	var req CommandRequest
+	var req apitypes.CommandRequest
 	err = json.UnmarshalRead(r.Body, &req)
 	if err != nil {
 		writeError(w, r, errBadRequest)
@@ -98,7 +99,7 @@ func (s *Server) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lines := s.instance.RecentConsole(n)
-	writeJSON(w, http.StatusOK, ConsoleResponse{Lines: lines})
+	writeJSON(w, http.StatusOK, apitypes.ConsoleResponse{Lines: lines})
 }
 
 func (s *Server) handleServerMetrics(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +124,7 @@ func (s *Server) handleServerEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = sse.send(EventResponse{
+	err = sse.send(apitypes.EventResponse{
 		Type:      minecraft.EventStateChanged.String(),
 		Timestamp: time.Now(),
 		State:     state.String(),

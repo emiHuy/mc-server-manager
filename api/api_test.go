@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
+	"github.com/emiHuy/mc-server-manager/internal/apitypes"
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
 
@@ -547,7 +548,7 @@ func TestNewMetricsResponse(t *testing.T) {
 
 	// Every field has a distinct value on purpose, so a field copied from the
 	// wrong source (say used and free swapped) fails the comparison.
-	want := MetricsResponse{
+	want := apitypes.MetricsResponse{
 		State:             "running",
 		UptimeSeconds:     90, // truncated, not rounded
 		PlayersOnline:     2,
