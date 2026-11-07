@@ -654,6 +654,11 @@ async function sendCommand() {
   }
 }
 
+function quickCommand(cmd) {
+  $("#cmd").value = cmd.trim();
+  sendCommand();
+}
+
 // Drag by the title bar, resize from the corner grip, maximize and restore.
 function setupConsoleWindow() {
   const win = $("#console-window");
@@ -765,6 +770,10 @@ function bindControls() {
   $("#console-clear").onclick = () => {
     $("#log").replaceChildren();
   };
+
+  for (const btn of $("#quick-cmd").children) {
+    btn.addEventListener("click", () => quickCommand(btn.dataset.cmd));
+  }
 
   $("#send").onclick = sendCommand;
   $("#cmd").addEventListener("keydown", (e) => {
