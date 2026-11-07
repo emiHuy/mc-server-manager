@@ -215,7 +215,7 @@ function giveUp() {
 
 function setConnection(s) {
   $("#conn").textContent = {
-    live: "Live",
+    live: "Connected",
     retrying: "Reconnecting…",
     offline: "Disconnected",
   }[s];
@@ -812,8 +812,11 @@ function init() {
   setupConsoleWindow();
   startTimers();
 
-  stream("/api/server/events", handleEvent, () =>
-    loadStatus().catch((e) => toast(e.message), setConnection),
+  stream(
+    "/api/server/events",
+    handleEvent,
+    () => loadStatus().catch((e) => toast(e.message)),
+    setConnection,
   );
 
   stream("/api/server/metrics/stream", handleMetrics);
