@@ -140,6 +140,11 @@ body {
     gap: 4px;
 }
 
+.side-foot div {
+    display: flex;
+    flex-direction: column;
+}
+
 .side-foot button {
     all: unset;
     cursor: pointer;

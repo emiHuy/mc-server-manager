@@ -215,7 +215,7 @@ function giveUp() {
 
 function setConnection(s) {
   $("#conn").textContent = {
-    live: "Live",
+    live: "Connected",
     retrying: "Reconnecting…",
     offline: "Disconnected",
   }[s];
@@ -654,6 +654,11 @@ async function sendCommand() {
   }
 }
 
+function quickCommand(cmd) {
+  $("#cmd").value = cmd.trim();
+  sendCommand();
+}
+
 // Drag by the title bar, resize from the corner grip, maximize and restore.
 function setupConsoleWindow() {
   const win = $("#console-window");
@@ -766,6 +771,10 @@ function bindControls() {
     $("#log").replaceChildren();
   };
 
+  for (const btn of $("#quick-cmd").children) {
+    btn.addEventListener("click", () => quickCommand(btn.dataset.cmd));
+  }
+
   $("#send").onclick = sendCommand;
   $("#cmd").addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -803,8 +812,11 @@ function init() {
   setupConsoleWindow();
   startTimers();
 
-  stream("/api/server/events", handleEvent, () =>
-    loadStatus().catch((e) => toast(e.message), setConnection),
+  stream(
+    "/api/server/events",
+    handleEvent,
+    () => loadStatus().catch((e) => toast(e.message)),
+    setConnection,
   );
 
   stream("/api/server/metrics/stream", handleMetrics);
