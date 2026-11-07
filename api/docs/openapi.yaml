@@ -1,0 +1,288 @@
+openapi: 3.0.3
+
+info:
+  title: mc-server-manager API
+  version: 0.1.0
+  description: |
+    Control and monitor a single Minecraft server.
+
+    If a token is configured, click **Authorize** and paste it. Every request
+    then sends `Authorization: Bearer <token>`.
+
+    The three streaming endpoints are Server-Sent Events, which Swagger UI
+    cannot display. Use `curl -N -H "Authorization: Bearer <token>" <url>`.
+    Each message's `data` field is a JSON object.
+
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+
+tags:
+- name: Control
+- name: Monitoring
+- name: Streams
+
+paths:
+  /api/server/status:
+    get:
+      tags: [Monitoring]
+      summary: State, uptime, and players
+      responses:
+        "200":
+          description: Current status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/server/start:
+    post:
+      tags: [Control]
+      summary: Start the server
+      description: Returns before the world has finished loading. Watch the state until it is `running`.
+      responses:
+        "202":
+          description: Start accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StateResult" }
+              example: { state: starting }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/server/stop:
+    post:
+      tags: [Control]
+      summary: Stop the server gracefully
+      description: |
+        Blocks until the server has exited, so the request can take a while.
+        If it does not stop within `stop_timeout`, it is killed.
+      responses:
+        "200":
+          description: Server has stopped
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StateResult" }
+              example: { state: stopped }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/server/kill:
+    post:
+      tags: [Control]
+      summary: Kill the server immediately
+      description: Does not save the world.
+      responses:
+        "202":
+          description: Kill accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StateResult" }
+              example: { state: stopped }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/server/command:
+    post:
+      tags: [Control]
+      summary: Send a console command
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CommandRequest" }
+      responses:
+        "204":
+          description: Command sent
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "415":
+          description: Content-Type is not application/json
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/server/console:
+    get:
+      tags: [Monitoring]
+      summary: Recent console lines
+      parameters:
+        - $ref: "#/components/parameters/Lines"
+      responses:
+        "200":
+          description: Console lines, oldest first
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Console" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/server/metrics:
+    get:
+      tags: [Monitoring]
+      summary: Uptime, CPU, memory, and disk usage
+      responses:
+        "200":
+          description: Current metrics
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Metrics" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/server/events:
+    get:
+      tags: [Streams]
+      summary: Live events (SSE)
+      description: |
+        State changes, players joining and leaving, chat, warnings, and errors.
+        The first message is always a `state_changed` event with the current
+        state. A slow client can miss messages; after reconnecting, call
+        `/api/server/status` to resync.
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { $ref: "#/components/schemas/Event" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/server/console/stream:
+    get:
+      tags: [Streams]
+      summary: Recent lines, then live console output (SSE)
+      parameters:
+        - $ref: "#/components/parameters/Lines"
+      responses:
+        "200":
+          description: Console line stream
+          content:
+            text/event-stream:
+              schema: { $ref: "#/components/schemas/ConsoleLine" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/server/metrics/stream:
+    get:
+      tags: [Streams]
+      summary: Live metrics (SSE)
+      responses:
+        "200":
+          description: Metrics stream
+          content:
+            text/event-stream:
+              schema: { $ref: "#/components/schemas/Metrics" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    Lines:
+      name: lines
+      in: query
+      description: How many recent lines to return
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or wrong token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Not valid in the current server state, such as stopping a stopped server
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: Unexpected failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+    State:
+      type: string
+      enum: [stopped, starting, running, stopping, crashed]
+
+    StateResult:
+      type: object
+      properties:
+        state: { $ref: "#/components/schemas/State" }
+
+    Status:
+      type: object
+      properties:
+        state: { $ref: "#/components/schemas/State" }
+        uptime_seconds: { type: integer, format: int64 }
+        players:
+          type: array
+          items: { type: string }
+
+    Metrics:
+      type: object
+      properties:
+        state: { $ref: "#/components/schemas/State" }
+        uptime_seconds: { type: integer, format: int64 }
+        players_online: { type: integer }
+        cpu_percent: { type: number, description: "Server process, per core (can exceed 100)" }
+        cpu_machine_percent: { type: number, description: "Server process as a share of the whole machine" }
+        cpu_cores: { type: integer }
+        memory_bytes: { type: integer, format: int64 }
+        disk_used_bytes: { type: integer, format: int64 }
+        disk_free_bytes: { type: integer, format: int64 }
+        disk_total_bytes: { type: integer, format: int64 }
+
+    Event:
+      type: object
+      properties:
+        type:
+          type: string
+          enum:
+            - unknown
+            - server_warning
+            - server_error
+            - server_ready
+            - state_changed
+            - player_joined
+            - player_left
+            - player_chat
+        timestamp: { type: string, format: date-time }
+        player: { type: string, description: Present for player events }
+        message: { type: string, description: Present for chat, warning, and error events }
+        state:
+          $ref: "#/components/schemas/State"
+
+    Console:
+      type: object
+      properties:
+        lines:
+          type: array
+          items: { type: string }
+
+    ConsoleLine:
+      type: object
+      properties:
+        line: { type: string }
+
+    CommandRequest:
+      type: object
+      required: [command]
+      properties:
+        command: { type: string, example: say hello }

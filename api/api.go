@@ -18,6 +18,9 @@ import (
 
 const readHeaderTimeout = 5 * time.Second
 
+//go:embed docs
+var docsFiles embed.FS
+
 //go:embed static
 var webFiles embed.FS
 
@@ -47,7 +50,7 @@ func New(instance *minecraft.Instance, conf config.APIConfig) *Server {
 }
 
 func (s *Server) Run() error {
-	slog.Info("api server listening", "addr", s.httpServer.Addr, "dashboard", dashboardURL(s.httpServer.Addr))
+	slog.Info("api server listening", "addr", s.httpServer.Addr, "dashboard", dashboardURL(s.httpServer.Addr), "docs", docsURL(s.httpServer.Addr))
 	err := s.httpServer.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -72,6 +75,13 @@ func (s *Server) routes() *http.ServeMux {
 	handle(mux, http.MethodGet, "/api/server/events", s.handleServerEvents)
 	handle(mux, http.MethodGet, "/api/server/console/stream", s.handleServerConsoleStream)
 	handle(mux, http.MethodGet, "/api/server/metrics/stream", s.handleServerMetricsStream)
+
+	docsSite, err := fs.Sub(docsFiles, "docs")
+	if err != nil {
+		panic(err)
+	}
+	mux.Handle("GET /docs/", http.StripPrefix("/docs/", http.FileServerFS(docsSite)))
+	mux.Handle("GET /docs", http.RedirectHandler("/docs/", http.StatusMovedPermanently))
 
 	site, err := fs.Sub(webFiles, "static")
 	if err != nil {
@@ -108,4 +118,16 @@ func dashboardURL(addr string) string {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port) + "/dashboard"
+}
+
+func docsURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://" + addr
+	}
+
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/docs"
 }
