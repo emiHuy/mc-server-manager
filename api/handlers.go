@@ -45,7 +45,7 @@ func (s *Server) handleServerStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, StateResponse{
+	writeJSON(w, http.StatusOK, StateResponse{
 		State: minecraft.StateStopped.String(),
 	})
 }
@@ -137,7 +137,7 @@ func (s *Server) handleServerEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServerConsoleStream(w http.ResponseWriter, r *http.Request) {
 	// Validate before the headers go out, so a bad request still gets a JSON 400.
-	n, err := linesParam(r, 0)
+	n, err := linesParam(r, 1)
 	if err != nil {
 		writeError(w, r, err)
 		return
