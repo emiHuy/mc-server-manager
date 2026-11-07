@@ -1,6 +1,9 @@
 package minecraft
 
-import "testing"
+import (
+	"encoding/json/v2"
+	"testing"
+)
 
 func TestStateString(t *testing.T) {
 	tests := []struct {
@@ -58,5 +61,32 @@ func TestStateLive(t *testing.T) {
 				t.Errorf("%v.live() = %v, want %v", tt.state, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStateJSONRoundTrip(t *testing.T) {
+	for _, want := range []State{StateStopped, StateStarting, StateRunning, StateStopping, StateCrashed} {
+		data, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("marshal %v: %v", want, err)
+		}
+		if string(data) != `"`+want.String()+`"` {
+			t.Fatalf("marshal %v = %s, want a quoted string", want, data)
+		}
+
+		var got State
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal %s: %v", data, err)
+		}
+		if got != want {
+			t.Fatalf("round trip: got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestStateUnmarshalUnknown(t *testing.T) {
+	var s State
+	if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
+		t.Fatal("expected an error for an unknown state")
 	}
 }
