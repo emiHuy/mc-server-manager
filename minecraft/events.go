@@ -57,25 +57,14 @@ func (et EventType) MarshalText() ([]byte, error) {
 }
 
 func (et *EventType) UnmarshalText(text []byte) error {
-	str := string(text)
-	switch str {
-	case "server_warning":
-		*et = EventServerWarning
-	case "server_error":
-		*et = EventServerError
-	case "server_ready":
-		*et = EventServerReady
-	case "state_changed":
-		*et = EventStateChanged
-	case "player_joined":
-		*et = EventPlayerJoined
-	case "player_left":
-		*et = EventPlayerLeft
-	case "player_chat":
-		*et = EventPlayerChat
-	default:
-		*et = EventUnknown
+	for _, e := range []EventType{EventServerWarning, EventServerError, EventServerReady, EventStateChanged, EventPlayerJoined} {
+		if e.String() == string(text) {
+			*et = e
+			return nil
+		}
 	}
+
+	*et = EventUnknown
 	return nil
 }
 

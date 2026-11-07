@@ -34,14 +34,14 @@ func (s State) MarshalText() ([]byte, error) {
 	return []byte(s.String()), nil
 }
 
-func (s *State) UnmarshalText(b []byte) error {
+func (s *State) UnmarshalText(text []byte) error {
 	for _, c := range []State{StateStopped, StateStarting, StateRunning, StateStopping, StateCrashed} {
-		if c.String() == string(b) {
+		if c.String() == string(text) {
 			*s = c
 			return nil
 		}
 	}
-	return fmt.Errorf("unknown state %q", b)
+	return fmt.Errorf("unknown state %q", text)
 }
 
 // live reports whether the server is starting or running.

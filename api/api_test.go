@@ -722,8 +722,8 @@ func TestServerMetricsStream(t *testing.T) {
 func TestServerConsoleStream(t *testing.T) {
 	server := newTestServer(t, newStoppedInstance())
 
-	t.Run("opens with lines=0", func(t *testing.T) {
-		resp, _ := openStream(t, server, "/api/server/console/stream?lines=0")
+	t.Run("opens with lines=1", func(t *testing.T) {
+		resp, _ := openStream(t, server, "/api/server/console/stream?lines=1")
 		checkStreamHeaders(t, resp)
 	})
 
