@@ -82,6 +82,7 @@ func runFakeServer(mode string) {
 				os.Exit(1)
 			}
 		}
+		scanner.Err()
 		// Stdin closed without a stop.
 		os.Exit(1)
 	default:
@@ -117,12 +118,13 @@ func newFakeInstance(t *testing.T, mode string, stopTimeout time.Duration) *Inst
 
 	// TempDir is created first, so it is removed after the process is gone.
 	inst := New(config.MinecraftConfig{
-		Directory:   t.TempDir(),
-		Command:     exe,
-		JarFile:     "server.jar",
-		MinMemory:   "1M",
-		MaxMemory:   "1M",
-		StopTimeout: stopTimeout,
+		Directory:      t.TempDir(),
+		Command:        exe,
+		JarFile:        "server.jar",
+		MinMemory:      "1M",
+		MaxMemory:      "1M",
+		StopTimeout:    stopTimeout,
+		StartupTimeout: lifecycleTimeout,
 	})
 
 	t.Cleanup(func() {
@@ -572,5 +574,24 @@ func TestRequestStopNonZeroExitIsStopped(t *testing.T) {
 	case <-inst.Done():
 	case <-time.After(lifecycleTimeout):
 		t.Error("instance did not finish after the server exited")
+	}
+}
+
+func TestStartupTimeoutKillsStuckServer(t *testing.T) {
+	inst := newFakeInstance(t, modeNeverReady, lifecycleTimeout)
+	inst.conf.StartupTimeout = 200 * time.Millisecond // adjust if conf isn't a field by this name
+
+	sub := inst.SubscribeEvents()
+	t.Cleanup(sub.Cancel)
+
+	err := inst.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateCrashed)
+	want := []State{StateStarting, StateCrashed}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
 	}
 }

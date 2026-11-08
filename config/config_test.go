@@ -24,12 +24,13 @@ func validConfig() Config {
 	return Config{
 		API: APIConfig{Host: "127.0.0.1", Port: 8080},
 		Minecraft: MinecraftConfig{
-			Directory:   "/srv/minecraft",
-			Command:     "java",
-			JarFile:     "server.jar",
-			MinMemory:   "1G",
-			MaxMemory:   "2G",
-			StopTimeout: 30 * time.Second,
+			Directory:      "/srv/minecraft",
+			Command:        "java",
+			JarFile:        "server.jar",
+			MinMemory:      "1G",
+			MaxMemory:      "2G",
+			StopTimeout:    30 * time.Second,
+			StartupTimeout: 2 * time.Minute,
 		},
 	}
 }
@@ -112,6 +113,25 @@ func TestValidate(t *testing.T) {
 		{
 			name:   "stop_timeout at the minimum",
 			mutate: func(c *Config) { c.Minecraft.StopTimeout = minStopTimeout },
+		},
+		{
+			name:   "startup_timeout of zero",
+			mutate: func(c *Config) { c.Minecraft.StartupTimeout = 0 },
+			want:   []string{"minecraft.startup_timeout"},
+		},
+		{
+			name:   "startup_timeout below the minimum",
+			mutate: func(c *Config) { c.Minecraft.StartupTimeout = 500 * time.Millisecond },
+			want:   []string{"minecraft.startup_timeout"},
+		},
+		{
+			name:   "negative startup_timeout",
+			mutate: func(c *Config) { c.Minecraft.StartupTimeout = -time.Second },
+			want:   []string{"minecraft.startup_timeout"},
+		},
+		{
+			name:   "startup_timeout at the minimum",
+			mutate: func(c *Config) { c.Minecraft.StartupTimeout = minStartupTimeout },
 		},
 		{
 			name: "missing key and bad timeout are reported together",

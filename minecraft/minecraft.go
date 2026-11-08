@@ -53,12 +53,13 @@ type Instance struct {
 	samplerRunning bool
 
 	// mu guards every field below it.
-	mu        sync.Mutex
-	state     State
-	startedAt time.Time // zero unless the server is running
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	exited    chan struct{}
+	mu           sync.Mutex
+	state        State
+	startedAt    time.Time // zero unless the server is running
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	exited       chan struct{}
+	startupTimer *time.Timer
 }
 
 type Metrics struct {
@@ -159,6 +160,22 @@ func (inst *Instance) Start() error {
 
 	exited := make(chan struct{})
 	inst.exited = exited
+
+	timeout := inst.conf.StartupTimeout
+
+	inst.startupTimer = time.AfterFunc(timeout, func() {
+		inst.mu.Lock()
+		defer inst.mu.Unlock()
+
+		if inst.state != StateStarting || inst.cmd != cmd {
+			return
+		}
+		slog.Warn("minecraft server did not become ready in time, killing process", "timeout", timeout.String())
+		err := cmd.Process.Kill()
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			slog.Error("cannot kill minecraft server after startup timed out", "error", err)
+		}
+	})
 
 	go inst.watch(cmd, exited, consoleDone)
 
@@ -384,6 +401,7 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 
 	inst.mu.Lock()
 
+	inst.startupTimer.Stop()
 	stopRequested := inst.state == StateStopping
 	wasStarting := inst.state == StateStarting
 
@@ -423,6 +441,9 @@ func (inst *Instance) markReady(e Event) {
 	inst.mu.Lock()
 	ready := inst.state == StateStarting
 	if ready {
+		if inst.startupTimer != nil {
+			inst.startupTimer.Stop()
+		}
 		inst.setStateLocked(StateRunning)
 	}
 	inst.mu.Unlock()
