@@ -34,6 +34,7 @@ const (
 	modeExitAfterReady  = "exit-after-ready"  // becomes ready, then exits 0 by itself
 	modeCrash           = "crash"             // becomes ready, then exits 1
 	modePlayers         = "players"           // becomes ready, Steve joins, exits 0 on "stop"
+	modeExitOnStop      = "exit-on-stop"
 )
 
 func TestMain(m *testing.M) {
@@ -72,6 +73,17 @@ func runFakeServer(mode string) {
 	case modePlayers:
 		ready()
 		say("Steve joined the game")
+	case modeExitOnStop:
+		ready()
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			if strings.TrimSpace(scanner.Text()) == "stop" {
+				say("Stopping server")
+				os.Exit(1)
+			}
+		}
+		// Stdin closed without a stop.
+		os.Exit(1)
 	default:
 		ready()
 	}
@@ -538,5 +550,27 @@ func TestLifecycleMetrics(t *testing.T) {
 	}
 	if m.MemoryBytes != 0 || m.Uptime != 0 {
 		t.Errorf("process fields after exit = memory %d, uptime %v, want zero", m.MemoryBytes, m.Uptime)
+	}
+}
+
+func TestRequestStopNonZeroExitIsStopped(t *testing.T) {
+	inst, sub := startFake(t, modeExitOnStop, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	err := inst.RequestStop()
+	if err != nil {
+		t.Fatalf("RequestStop() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateStopped)
+	want := []State{StateStopping, StateStopped}
+	if !slices.Equal(got, want) {
+		t.Errorf("states after RequestStop() = %v, want %v", got, want)
+	}
+
+	select {
+	case <-inst.Done():
+	case <-time.After(lifecycleTimeout):
+		t.Error("instance did not finish after the server exited")
 	}
 }
