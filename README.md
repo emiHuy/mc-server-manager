@@ -84,7 +84,6 @@ go vet ./...
 
 ## TODO
 
-- `/api/server/restart`
 - Scheduled backups
 - Scheduled online/offline hours
 - Security hardening (check commands sent, bind to a tailnet address)
