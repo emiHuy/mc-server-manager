@@ -34,6 +34,7 @@ const (
 	modeExitAfterReady  = "exit-after-ready"  // becomes ready, then exits 0 by itself
 	modeCrash           = "crash"             // becomes ready, then exits 1
 	modePlayers         = "players"           // becomes ready, Steve joins, exits 0 on "stop"
+	modeExitOnStop      = "exit-on-stop"
 )
 
 func TestMain(m *testing.M) {
@@ -72,6 +73,18 @@ func runFakeServer(mode string) {
 	case modePlayers:
 		ready()
 		say("Steve joined the game")
+	case modeExitOnStop:
+		ready()
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			if strings.TrimSpace(scanner.Text()) == "stop" {
+				say("Stopping server")
+				os.Exit(1)
+			}
+		}
+		scanner.Err()
+		// Stdin closed without a stop.
+		os.Exit(1)
 	default:
 		ready()
 	}
@@ -105,12 +118,13 @@ func newFakeInstance(t *testing.T, mode string, stopTimeout time.Duration) *Inst
 
 	// TempDir is created first, so it is removed after the process is gone.
 	inst := New(config.MinecraftConfig{
-		Directory:   t.TempDir(),
-		Command:     exe,
-		JarFile:     "server.jar",
-		MinMemory:   "1M",
-		MaxMemory:   "1M",
-		StopTimeout: stopTimeout,
+		Directory:      t.TempDir(),
+		Command:        exe,
+		JarFile:        "server.jar",
+		MinMemory:      "1M",
+		MaxMemory:      "1M",
+		StopTimeout:    stopTimeout,
+		StartupTimeout: lifecycleTimeout,
 	})
 
 	t.Cleanup(func() {
@@ -538,5 +552,111 @@ func TestLifecycleMetrics(t *testing.T) {
 	}
 	if m.MemoryBytes != 0 || m.Uptime != 0 {
 		t.Errorf("process fields after exit = memory %d, uptime %v, want zero", m.MemoryBytes, m.Uptime)
+	}
+}
+
+func TestRequestStopNonZeroExitIsStopped(t *testing.T) {
+	inst, sub := startFake(t, modeExitOnStop, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	err := inst.RequestStop()
+	if err != nil {
+		t.Fatalf("RequestStop() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateStopped)
+	want := []State{StateStopping, StateStopped}
+	if !slices.Equal(got, want) {
+		t.Errorf("states after RequestStop() = %v, want %v", got, want)
+	}
+
+	select {
+	case <-inst.Done():
+	case <-time.After(lifecycleTimeout):
+		t.Error("instance did not finish after the server exited")
+	}
+}
+
+func TestStartupTimeoutKillsStuckServer(t *testing.T) {
+	inst := newFakeInstance(t, modeNeverReady, lifecycleTimeout)
+	inst.conf.StartupTimeout = 200 * time.Millisecond // adjust if conf isn't a field by this name
+
+	sub := inst.SubscribeEvents()
+	t.Cleanup(sub.Cancel)
+
+	err := inst.Start()
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateCrashed)
+	want := []State{StateStarting, StateCrashed}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestRestartFromRunning(t *testing.T) {
+	inst, sub := startFake(t, modeNormal, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	err := inst.Restart()
+	if err != nil {
+		t.Fatalf("Restart() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateRunning)
+	want := []State{StateStopping, StateStopped, StateStarting, StateRunning}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestRestartFromStopped(t *testing.T) {
+	inst := newFakeInstance(t, modeNormal, lifecycleTimeout)
+	sub := inst.SubscribeEvents()
+	t.Cleanup(sub.Cancel)
+
+	err := inst.Restart()
+	if err != nil {
+		t.Fatalf("Restart() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateRunning)
+	want := []State{StateStarting, StateRunning}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestRestartFromCrashed(t *testing.T) {
+	inst, sub := startFake(t, modeCrash, lifecycleTimeout)
+	waitForState(t, sub, StateCrashed)
+
+	err := inst.Restart()
+	if err != nil {
+		t.Fatalf("Restart() error: %v", err)
+	}
+
+	// modeCrash crashes again, so only check that the restart launched.
+	got := waitForState(t, sub, StateStarting)
+	want := []State{StateStarting}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestRestartWhileStopping(t *testing.T) {
+	inst, sub := startFake(t, modeIgnoreStop, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	err := inst.RequestStop()
+	if err != nil {
+		t.Fatalf("RequestStop() error: %v", err)
+	}
+
+	err = inst.Restart()
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("Restart() error = %v, want ErrInvalidState", err)
 	}
 }

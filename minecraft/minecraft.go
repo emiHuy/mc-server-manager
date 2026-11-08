@@ -53,12 +53,15 @@ type Instance struct {
 	samplerRunning bool
 
 	// mu guards every field below it.
-	mu        sync.Mutex
-	state     State
-	startedAt time.Time // zero unless the server is running
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	exited    chan struct{}
+	mu           sync.Mutex
+	state        State
+	startedAt    time.Time // zero unless the server is running
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	exited       chan struct{}
+	startupTimer *time.Timer
+
+	restartMu sync.Mutex // serialize Restart calls
 }
 
 type Metrics struct {
@@ -160,27 +163,50 @@ func (inst *Instance) Start() error {
 	exited := make(chan struct{})
 	inst.exited = exited
 
+	timeout := inst.conf.StartupTimeout
+
+	inst.startupTimer = time.AfterFunc(timeout, func() {
+		inst.mu.Lock()
+		defer inst.mu.Unlock()
+
+		if inst.state != StateStarting || inst.cmd != cmd {
+			return
+		}
+		slog.Warn("minecraft server did not become ready in time, killing process", "timeout", timeout.String())
+		err := cmd.Process.Kill()
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			slog.Error("cannot kill minecraft server after startup timed out", "error", err)
+		}
+	})
+
 	go inst.watch(cmd, exited, consoleDone)
 
 	return nil
 }
 
-// RequestStop sends the stop command and transitions the state to stopping immediately,
+// RequestStop marks the server as stopping and sends the stop command.
 func (inst *Instance) RequestStop() error {
-	err := inst.Send("stop")
-	if err != nil {
-		return fmt.Errorf("cannot stop minecraft server: %w", err)
+	inst.mu.Lock()
+
+	prev := inst.state
+	if !prev.live() {
+		inst.mu.Unlock()
+		return fmt.Errorf("cannot stop minecraft server: %w: %s", ErrInvalidState, prev)
 	}
 
-	inst.mu.Lock()
-	// The state flips after the stop command is written, not atomically with it.
-	// If the server exits non-zero in this tiny gap, watch records a crash.
-	// Revisit before adding crash auto-restart.
-	if inst.state.live() {
-		inst.setStateLocked(StateStopping)
-	}
+	stdin := inst.stdin
+	inst.setStateLocked(StateStopping)
 	inst.mu.Unlock()
 
+	err := inst.writeCommand(stdin, "stop")
+	if err != nil {
+		inst.mu.Lock()
+		if inst.state == StateStopping {
+			inst.setStateLocked(prev)
+		}
+		inst.mu.Unlock()
+		return fmt.Errorf("cannot stop minecraft server: %w", err)
+	}
 	return nil
 }
 
@@ -249,6 +275,35 @@ func (inst *Instance) Kill() error {
 	return nil
 }
 
+// Restart stops the server if it is live, then starts it.
+// It returns once the new process has launched, so the state is Starting, not Running.
+func (inst *Instance) Restart() error {
+	inst.restartMu.Lock()
+	defer inst.restartMu.Unlock()
+
+	inst.mu.Lock()
+	state := inst.state
+	inst.mu.Unlock()
+
+	switch {
+	case state.live():
+		err := inst.Stop()
+		if err != nil && !errors.Is(err, ErrInvalidState) {
+			return fmt.Errorf("cannot restart minecraft server: %w", err)
+		}
+	case state == StateStopped || state == StateCrashed:
+		// do nothing
+	default:
+		return fmt.Errorf("cannot restart minecraft server: %w: %s", ErrInvalidState, state)
+	}
+
+	err := inst.Start()
+	if err != nil {
+		return fmt.Errorf("cannot restart minecraft server: %w", err)
+	}
+	return nil
+}
+
 // Done returns a channel that closes when the current process exits.
 // If nothing is running, it returns one that is already closed.
 func (inst *Instance) Done() <-chan struct{} {
@@ -274,22 +329,14 @@ func (inst *Instance) Send(command string) error {
 	}
 
 	inst.mu.Lock()
-	if !inst.state.live() {
-		state := inst.state
-		inst.mu.Unlock()
-		return fmt.Errorf("cannot send command: %w: %s", ErrInvalidState, state)
-	}
+	state := inst.state
 	stdin := inst.stdin
 	inst.mu.Unlock()
 
-	inst.writeMu.Lock()
-	defer inst.writeMu.Unlock()
-
-	_, err := stdin.Write([]byte(trimmedCommand + "\n"))
-	if err != nil {
-		return fmt.Errorf("cannot send command to minecraft server: %w", err)
+	if !state.live() {
+		return fmt.Errorf("cannot send command: %w: %s", ErrInvalidState, state)
 	}
-	return nil
+	return inst.writeCommand(stdin, trimmedCommand)
 }
 
 // RecentConsole return the n most recent console lines.
@@ -385,6 +432,7 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 
 	inst.mu.Lock()
 
+	inst.startupTimer.Stop()
 	stopRequested := inst.state == StateStopping
 	wasStarting := inst.state == StateStarting
 
@@ -424,6 +472,9 @@ func (inst *Instance) markReady(e Event) {
 	inst.mu.Lock()
 	ready := inst.state == StateStarting
 	if ready {
+		if inst.startupTimer != nil {
+			inst.startupTimer.Stop()
+		}
 		inst.setStateLocked(StateRunning)
 	}
 	inst.mu.Unlock()
@@ -443,7 +494,9 @@ func (inst *Instance) setStateLocked(newState State) {
 
 	switch newState {
 	case StateRunning:
-		inst.startedAt = time.Now()
+		if inst.state != StateStopping {
+			inst.startedAt = time.Now()
+		}
 	case StateStopped, StateCrashed:
 		inst.startedAt = time.Time{}
 	}
@@ -490,6 +543,18 @@ func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
 		slog.Warn("console read failed", "error", err)
 		io.Copy(io.Discard, r)
 	}
+}
+
+// writeCommand writes one line to the server's stdin. It does no validation
+// and no state check; callers are responsible for both.
+func (inst *Instance) writeCommand(stdin io.Writer, line string) error {
+	inst.writeMu.Lock()
+	defer inst.writeMu.Unlock()
+
+	if _, err := stdin.Write([]byte(line + "\n")); err != nil {
+		return fmt.Errorf("cannot write to minecraft server stdin: %w", err)
+	}
+	return nil
 }
 
 // collect gathers current runtime metrics for the instance.

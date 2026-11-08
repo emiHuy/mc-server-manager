@@ -13,12 +13,14 @@ import (
 )
 
 const (
-	minStopTimeout     = time.Second
-	defaultStopTimeout = 30 * time.Second
-	defaultHost        = "127.0.0.1"
-	defaultPort        = 8080
-	minTokenLength     = 16
-	placeholderToken   = "your_generated_token_here"
+	minStopTimeout        = time.Second
+	defaultStopTimeout    = 30 * time.Second
+	minStartupTimeout     = 5 * time.Second
+	defaultStartupTimeout = 2 * time.Minute
+	defaultHost           = "127.0.0.1"
+	defaultPort           = 8080
+	minTokenLength        = 16
+	placeholderToken      = "your_generated_token_here"
 )
 
 // Config contains the application configuration.
@@ -36,14 +38,15 @@ type APIConfig struct {
 
 // MinecraftConfig contains configuration for launching and managing a Minecraft server.
 type MinecraftConfig struct {
-	Directory   string        `toml:"directory"`
-	Command     string        `toml:"command"`
-	JarFile     string        `toml:"jar_file"`
-	MinMemory   string        `toml:"min_memory"`
-	MaxMemory   string        `toml:"max_memory"`
-	Gui         bool          `toml:"gui"`
-	StopTimeout time.Duration `toml:"stop_timeout"`
-	Autostart   bool          `toml:"autostart"`
+	Directory      string        `toml:"directory"`
+	Command        string        `toml:"command"`
+	JarFile        string        `toml:"jar_file"`
+	MinMemory      string        `toml:"min_memory"`
+	MaxMemory      string        `toml:"max_memory"`
+	Gui            bool          `toml:"gui"`
+	StopTimeout    time.Duration `toml:"stop_timeout"`
+	StartupTimeout time.Duration `toml:"startup_timeout"`
+	Autostart      bool          `toml:"autostart"`
 }
 
 // Options contains application-level options.
@@ -75,6 +78,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if conf.Minecraft.StopTimeout == 0 {
 		conf.Minecraft.StopTimeout = defaultStopTimeout
+	}
+	if conf.Minecraft.StartupTimeout == 0 {
+		conf.Minecraft.StartupTimeout = defaultStartupTimeout
 	}
 
 	err = conf.validate()
@@ -113,6 +119,9 @@ func (c *Config) validate() error {
 	}
 	if c.Minecraft.StopTimeout < minStopTimeout {
 		problems = append(problems, fmt.Sprintf("minecraft.stop_timeout must be at least %s", minStopTimeout))
+	}
+	if c.Minecraft.StartupTimeout < minStartupTimeout {
+		problems = append(problems, fmt.Sprintf("minecraft.startup_timeout must be at least %s", minStartupTimeout))
 	}
 	if c.API.Port < 1 || c.API.Port > 65535 {
 		problems = append(problems, "api.port must be between 1 and 65535")

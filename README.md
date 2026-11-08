@@ -74,7 +74,6 @@ stopped -> starting -> running -> stopping -> stopped
 - The API is plain HTTP, so the token is visible to anyone sniffing the network. With no token and a non-loopback host, anyone on the network can control the server.
 - A slow stream client can miss messages. Re-fetch `/api/server/status` after reconnecting.
 - Readiness detection expects vanilla's "Done" line.
-- There is no startup timeout. A server that hangs while loading stays in `starting`.
 
 ## Development
 
@@ -85,7 +84,6 @@ go vet ./...
 
 ## TODO
 
-- `/api/server/restart`
 - Scheduled backups
 - Scheduled online/offline hours
 - Security hardening (check commands sent, bind to a tailnet address)

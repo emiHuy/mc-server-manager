@@ -221,6 +221,7 @@ func TestWrongMethod(t *testing.T) {
 		{"delete on status", http.MethodDelete, "/api/server/status", "GET"},
 		{"get on start", http.MethodGet, "/api/server/start", "POST"},
 		{"get on stop", http.MethodGet, "/api/server/stop", "POST"},
+		{"get on restart", http.MethodGet, "/api/server/restart", "POST"},
 	}
 
 	for _, tt := range tests {
@@ -415,6 +416,20 @@ func TestServerStopWhenStopped(t *testing.T) {
 	body, _ := readJSON[errorResponse](t, resp)
 	if !strings.Contains(body.Error, "stopped") {
 		t.Errorf("error = %q, want it to mention the stopped state", body.Error)
+	}
+}
+
+func TestRestartLaunchFailure(t *testing.T) {
+	server := newTestServer(t, newFailingLaunchInstance(t))
+
+	resp := post(t, server, "/api/server/restart", "", "")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status code = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	body, _ := readJSON[errorResponse](t, resp)
+	if body.Error != "internal error" {
+		t.Errorf("error = %q, want %q", body.Error, "internal error")
 	}
 }
 
