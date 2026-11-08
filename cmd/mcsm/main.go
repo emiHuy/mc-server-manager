@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	defaultAddr  = "http://127.0.0.1:8080"
-	quickTimeout = 15 * time.Second
-	stopTimeout  = 2 * time.Minute
-	startTimeout = 5 * time.Minute
+	defaultAddr    = "http://127.0.0.1:8080"
+	quickTimeout   = 15 * time.Second
+	stopTimeout    = 2 * time.Minute
+	startTimeout   = 5 * time.Minute
+	restartTimeout = stopTimeout + 10*time.Second
 )
 
 const usageText = `usage: mcsm [--addr URL] [--token TOKEN] <command>
@@ -119,6 +120,8 @@ func run(ctx context.Context, c *client, cmd string, args []string) error {
 		return c.action(ctx, "stop", stopTimeout)
 	case "kill":
 		return c.action(ctx, "kill", quickTimeout)
+	case "restart":
+		return c.action(ctx, "restart", restartTimeout)
 	case "command":
 		if len(args) == 0 {
 			return usageError("command needs some text")
