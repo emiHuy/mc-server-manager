@@ -63,6 +63,18 @@ func (s *Server) handleServerKill(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleServerRestart(w http.ResponseWriter, r *http.Request) {
+	err := s.instance.Restart()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, apitypes.StateResponse{
+		State: minecraft.StateStarting.String(),
+	})
+}
+
 func (s *Server) handleServerCommand(w http.ResponseWriter, r *http.Request) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {

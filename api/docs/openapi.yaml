@@ -83,6 +83,25 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/server/restart:
+    post:
+      tags: [Control]
+      summary: Restart the server
+      description: |
+        Stops the server if it is running, then starts it again.
+        Returns once the new process has launched, not when the server is ready;
+        poll the status endpoint to see when it is running.
+        Returns 409 if the server is already stopping.
+      responses:
+        "202":
+          description: Restart accepted; the new process has launched
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StateResult" }
+              example: { state: starting }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /api/server/command:
     post:
       tags: [Control]

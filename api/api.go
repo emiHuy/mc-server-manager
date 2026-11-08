@@ -69,6 +69,7 @@ func (s *Server) routes() *http.ServeMux {
 	handle(mux, http.MethodPost, "/api/server/start", s.handleServerStart)
 	handle(mux, http.MethodPost, "/api/server/stop", s.handleServerStop)
 	handle(mux, http.MethodPost, "/api/server/kill", s.handleServerKill)
+	handle(mux, http.MethodPost, "/api/server/restart", s.handleServerRestart)
 	handle(mux, http.MethodPost, "/api/server/command", s.handleServerCommand)
 	handle(mux, http.MethodGet, "/api/server/console", s.handleServerConsole)
 	handle(mux, http.MethodGet, "/api/server/metrics", s.handleServerMetrics)
