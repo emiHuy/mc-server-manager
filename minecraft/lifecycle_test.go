@@ -595,3 +595,68 @@ func TestStartupTimeoutKillsStuckServer(t *testing.T) {
 		t.Errorf("states = %v, want %v", got, want)
 	}
 }
+
+func TestRestartFromRunning(t *testing.T) {
+	inst, sub := startFake(t, modeNormal, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	err := inst.Restart()
+	if err != nil {
+		t.Fatalf("Restart() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateRunning)
+	want := []State{StateStopping, StateStopped, StateStarting, StateRunning}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestRestartFromStopped(t *testing.T) {
+	inst := newFakeInstance(t, modeNormal, lifecycleTimeout)
+	sub := inst.SubscribeEvents()
+	t.Cleanup(sub.Cancel)
+
+	err := inst.Restart()
+	if err != nil {
+		t.Fatalf("Restart() error: %v", err)
+	}
+
+	got := waitForState(t, sub, StateRunning)
+	want := []State{StateStarting, StateRunning}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestRestartFromCrashed(t *testing.T) {
+	inst, sub := startFake(t, modeCrash, lifecycleTimeout)
+	waitForState(t, sub, StateCrashed)
+
+	err := inst.Restart()
+	if err != nil {
+		t.Fatalf("Restart() error: %v", err)
+	}
+
+	// modeCrash crashes again, so only check that the restart launched.
+	got := waitForState(t, sub, StateStarting)
+	want := []State{StateStarting}
+	if !slices.Equal(got, want) {
+		t.Errorf("states = %v, want %v", got, want)
+	}
+}
+
+func TestRestartWhileStopping(t *testing.T) {
+	inst, sub := startFake(t, modeIgnoreStop, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	err := inst.RequestStop()
+	if err != nil {
+		t.Fatalf("RequestStop() error: %v", err)
+	}
+
+	err = inst.Restart()
+	if !errors.Is(err, ErrInvalidState) {
+		t.Errorf("Restart() error = %v, want ErrInvalidState", err)
+	}
+}

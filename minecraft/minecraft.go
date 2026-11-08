@@ -60,6 +60,8 @@ type Instance struct {
 	stdin        io.WriteCloser
 	exited       chan struct{}
 	startupTimer *time.Timer
+
+	restartMu sync.Mutex // serialize Restart calls
 }
 
 type Metrics struct {
@@ -270,6 +272,35 @@ func (inst *Instance) Kill() error {
 		return fmt.Errorf("cannot kill minecraft server: %w", err)
 	}
 
+	return nil
+}
+
+// Restart stops the server if it is live, then starts it.
+// It returns once the new process has launched, so the state is Starting, not Running.
+func (inst *Instance) Restart() error {
+	inst.restartMu.Lock()
+	defer inst.restartMu.Unlock()
+
+	inst.mu.Lock()
+	state := inst.state
+	inst.mu.Unlock()
+
+	switch {
+	case state.live():
+		err := inst.Stop()
+		if err != nil && !errors.Is(err, ErrInvalidState) {
+			return fmt.Errorf("cannot restart minecraft server: %w", err)
+		}
+	case state == StateStopped || state == StateCrashed:
+		// do nothing
+	default:
+		return fmt.Errorf("cannot restart minecraft server: %w: %s", ErrInvalidState, state)
+	}
+
+	err := inst.Start()
+	if err != nil {
+		return fmt.Errorf("cannot restart minecraft server: %w", err)
+	}
 	return nil
 }
 
