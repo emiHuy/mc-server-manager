@@ -260,6 +260,7 @@ function applyState(s) {
   $("#btn-start").disabled = !(s === "stopped" || s === "crashed");
   $("#btn-stop").disabled = !(s === "starting" || s === "running");
   $("#btn-kill").disabled = s === "stopped";
+  $("#btn-restart").disabled = s === "starting" || s === "stopping";
 }
 
 // Clears everything that belongs to the run that just ended
@@ -741,6 +742,7 @@ function bindControls() {
   $("#btn-start").onclick = () => act("/api/server/start");
   $("#btn-stop").onclick = () => act("/api/server/stop");
   $("#btn-kill").onclick = () => act("/api/server/kill");
+  $("#btn-restart").onclick = () => act("/api/server/restart");
 
   $("#theme").onclick = () => {
     const root = document.documentElement;
