@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
+	"github.com/emiHuy/mc-server-manager/internal/portcheck"
 	"github.com/emiHuy/mc-server-manager/internal/sysmetrics"
 )
 
@@ -101,6 +104,20 @@ func New(conf config.MinecraftConfig) *Instance {
 	}
 }
 
+func (inst *Instance) preflight() error {
+	host, port, err := serverAddrFromProperties(inst.conf.Directory)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPreflight, err)
+	}
+
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	err = portcheck.Available(addr)
+	if err != nil {
+		return fmt.Errorf("%w: %s is not available: %w", ErrPreflight, addr, err)
+	}
+	return nil
+}
+
 // Start launches the server process and returns without waiting for the world to load.
 // The state stays starting until EventServerReady.
 func (inst *Instance) Start() error {
@@ -109,6 +126,11 @@ func (inst *Instance) Start() error {
 
 	if inst.state != StateStopped && inst.state != StateCrashed {
 		return fmt.Errorf("cannot start minecraft server when instance is %w: %s", ErrInvalidState, inst.state)
+	}
+
+	err := inst.preflight()
+	if err != nil {
+		return err
 	}
 
 	inst.setStateLocked(StateStarting)

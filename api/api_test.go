@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -347,6 +349,34 @@ func TestWriteError(t *testing.T) {
 			t.Error("response leaked the underlying error text")
 		}
 	})
+}
+
+func TestStartPortTakenError(t *testing.T) {
+	dir := t.TempDir()
+	inst := minecraft.New(config.MinecraftConfig{Directory: dir})
+	server := newTestServer(t, inst)
+
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	props := fmt.Sprintf("server-port=%d\n", port)
+	if err := os.WriteFile(filepath.Join(dir, "server.properties"), []byte(props), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := post(t, server, "/api/server/start", "", "")
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status code = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+
+	body, _ := readJSON[errorResponse](t, resp)
+	if !strings.Contains(body.Error, strconv.Itoa(port)) {
+		t.Errorf("error = %q, want it to mention port %d", body.Error, port)
+	}
 }
 
 // ---------------------------------------------------------------------------

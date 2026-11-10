@@ -220,7 +220,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: Not valid in the current server state, such as stopping a stopped server
+      description: The request conflicts with the server's current state, or a startup check failed (for example, the server port is already in use).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

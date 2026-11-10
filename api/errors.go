@@ -36,7 +36,7 @@ func statusFor(err error) int {
 	switch {
 	case errors.As(err, &ae):
 		return ae.status
-	case errors.Is(err, minecraft.ErrInvalidState):
+	case errors.Is(err, minecraft.ErrInvalidState) || errors.Is(err, minecraft.ErrPreflight):
 		return http.StatusConflict
 	case errors.Is(err, minecraft.ErrInvalidCommand):
 		return http.StatusBadRequest
