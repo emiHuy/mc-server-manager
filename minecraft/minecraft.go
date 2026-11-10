@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +21,9 @@ import (
 
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
+	"github.com/emiHuy/mc-server-manager/internal/pidfile"
+	"github.com/emiHuy/mc-server-manager/internal/portcheck"
+	"github.com/emiHuy/mc-server-manager/internal/proc"
 	"github.com/emiHuy/mc-server-manager/internal/sysmetrics"
 )
 
@@ -30,6 +36,9 @@ const (
 	consoleSubscriberCapacity = 64
 	eventSubscriberCapacity   = 64
 	metricsSubscriberCapacity = 4
+
+	pidfileName         = "mcsm.pid"
+	staleStartTolerance = 5 * time.Second
 )
 
 // Instance manages one Minecraft server process.
@@ -101,6 +110,42 @@ func New(conf config.MinecraftConfig) *Instance {
 	}
 }
 
+// CheckStale refuses if the pidfile points at a live Java process.
+// A pidfile that is unreadable, or that points at a dead or unrelated process, is a leftover and is removed.
+func (inst *Instance) CheckStale() error {
+	path := inst.pidfilePath()
+
+	info, err := pidfile.Read(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		slog.Warn("removing unreadable pidfile", "path", path, "error", err)
+		inst.removePidfile()
+		return nil
+	}
+
+	p, err := proc.Lookup(info.PID)
+	if errors.Is(err, proc.ErrNotFound) {
+		slog.Info("removing stale pidfile, process is gone", "pid", info.PID)
+		inst.removePidfile()
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot check whether minecraft server (pid %d) is still running: %w", info.PID, err)
+	}
+
+	// The real server started before the pidfile was written. A process that
+	// started later is an unrelated one that reused the PID.
+	if !looksLikeJava(p.Name) || p.StartedAt.After(info.StartedAt.Add(staleStartTolerance)) {
+		slog.Info("removing stale pidfile, pid belongs to another process", "pid", info.PID, "name", p.Name)
+		inst.removePidfile()
+		return nil
+	}
+
+	return fmt.Errorf("a minecraft server is already running (pid %d, started %s); stop it or delete %s if it is not one", info.PID, info.StartedAt.Format(time.RFC3339), path)
+}
+
 // Start launches the server process and returns without waiting for the world to load.
 // The state stays starting until EventServerReady.
 func (inst *Instance) Start() error {
@@ -109,6 +154,11 @@ func (inst *Instance) Start() error {
 
 	if inst.state != StateStopped && inst.state != StateCrashed {
 		return fmt.Errorf("cannot start minecraft server when instance is %w: %s", ErrInvalidState, inst.state)
+	}
+
+	err := inst.preflight()
+	if err != nil {
+		return err
 	}
 
 	inst.setStateLocked(StateStarting)
@@ -151,6 +201,8 @@ func (inst *Instance) Start() error {
 		reader.Close()
 		return fmt.Errorf("cannot start minecraft server: %w", err)
 	}
+
+	inst.writePidfile(cmd.Process.Pid)
 
 	writer.Close()
 	consoleDone := make(chan struct{})
@@ -416,6 +468,45 @@ func (inst *Instance) SubscribeMetrics() ([]Metrics, *fanout.Subscription[Metric
 	return latest, sub
 }
 
+// preflight checks if the specified server address is available for use.
+func (inst *Instance) preflight() error {
+	host, port, err := serverAddrFromProperties(inst.conf.Directory)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPreflight, err)
+	}
+
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	err = portcheck.Available(addr)
+	if err != nil {
+		return fmt.Errorf("%w: %s is not available: %w", ErrPreflight, addr, err)
+	}
+	return nil
+}
+
+func (inst *Instance) pidfilePath() string {
+	return filepath.Join(inst.conf.Directory, pidfileName)
+}
+
+// writePidfile records the server's PID and start time.
+// It runs with inst.mu held, so it must not take it.
+func (inst *Instance) writePidfile(pid int) {
+	info := pidfile.Info{PID: pid, StartedAt: time.Now()}
+	if err := pidfile.Write(inst.pidfilePath(), info); err != nil {
+		slog.Warn("cannot write pidfile", "path", inst.pidfilePath(), "error", err)
+	}
+}
+
+// removePidfile deletes the pidfile. It runs with inst.mu held.
+func (inst *Instance) removePidfile() {
+	if err := pidfile.Remove(inst.pidfilePath()); err != nil {
+		slog.Warn("cannot remove pidfile", "path", inst.pidfilePath(), "error", err)
+	}
+}
+
+func looksLikeJava(name string) bool {
+	return strings.Contains(strings.ToLower(name), "java")
+}
+
 // watch is the only caller of cmd.Wait.
 // It records how the process ended and clears the per-launch fields.
 func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone chan struct{}) {
@@ -451,6 +542,7 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 		inst.cmd = nil
 		inst.stdin = nil
 		inst.exited = nil
+		inst.removePidfile()
 	}
 	inst.mu.Unlock()
 

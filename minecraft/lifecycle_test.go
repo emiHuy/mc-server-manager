@@ -5,14 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
+	"github.com/emiHuy/mc-server-manager/internal/pidfile"
 )
 
 // These tests run the real Start, Stop, and Kill code against a fake server.
@@ -116,9 +120,11 @@ func newFakeInstance(t *testing.T, mode string, stopTimeout time.Duration) *Inst
 
 	t.Setenv(fakeServerEnv, mode)
 
-	// TempDir is created first, so it is removed after the process is gone.
+	dir := t.TempDir()
+	writeServerProperties(t, dir, fmt.Sprintf("server-port=%d\n", freePort(t)))
+
 	inst := New(config.MinecraftConfig{
-		Directory:      t.TempDir(),
+		Directory:      dir,
 		Command:        exe,
 		JarFile:        "server.jar",
 		MinMemory:      "1M",
@@ -225,6 +231,93 @@ func isClosed(ch <-chan struct{}) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("cannot find a free port: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func writeServerProperties(t *testing.T, dir, contents string) {
+	t.Helper()
+
+	path := filepath.Join(dir, "server.properties")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("cannot write server.properties: %v", err)
+	}
+}
+
+func TestStartPortTaken(t *testing.T) {
+	inst := newFakeInstance(t, modeNormal, lifecycleTimeout)
+	sub := inst.SubscribeEvents()
+	t.Cleanup(sub.Cancel)
+
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	port := ln.Addr().(*net.TCPAddr).Port
+	writeServerProperties(t, inst.conf.Directory, fmt.Sprintf("server-port=%d\n", port))
+
+	err = inst.Start()
+	if err == nil {
+		t.Fatal("Start() = nil with the port taken, want error")
+	}
+	if !errors.Is(err, ErrPreflight) {
+		t.Errorf("Start() error = %v, want ErrPreflight", err)
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(port)) {
+		t.Errorf("Start() error = %q, want it to mention port %d", err, port)
+	}
+	if got := drainStates(sub.C); len(got) != 0 {
+		t.Errorf("states = %v, want none", got)
+	}
+	if s := inst.State(); s != StateStopped {
+		t.Errorf("state = %v, want %v", s, StateStopped)
+	}
+}
+
+func TestStartBadServerProperties(t *testing.T) {
+	inst := newFakeInstance(t, modeNormal, lifecycleTimeout)
+	sub := inst.SubscribeEvents()
+	t.Cleanup(sub.Cancel)
+
+	writeServerProperties(t, inst.conf.Directory, "server-port=abc\n")
+
+	err := inst.Start()
+	if !errors.Is(err, ErrPreflight) {
+		t.Fatalf("Start() error = %v, want ErrPreflight", err)
+	}
+	if got := drainStates(sub.C); len(got) != 0 {
+		t.Errorf("states = %v, want none", got)
+	}
+}
+
+func TestStartMissingServerPropertiesUsesDefault(t *testing.T) {
+	// With no server.properties the check targets 25565. Hold it so the result
+	// does not depend on whether something else on the machine already has it.
+	ln, err := net.Listen("tcp", ":25565")
+	if err != nil {
+		t.Skipf("cannot bind 25565 to run this test: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	inst := newFakeInstance(t, modeNormal, lifecycleTimeout)
+	if err := os.Remove(filepath.Join(inst.conf.Directory, "server.properties")); err != nil {
+		t.Fatal(err)
+	}
+
+	err = inst.Start()
+	if !errors.Is(err, ErrPreflight) || !strings.Contains(err.Error(), "25565") {
+		t.Errorf("Start() error = %v, want ErrPreflight mentioning 25565", err)
 	}
 }
 
@@ -658,5 +751,45 @@ func TestRestartWhileStopping(t *testing.T) {
 	err = inst.Restart()
 	if !errors.Is(err, ErrInvalidState) {
 		t.Errorf("Restart() error = %v, want ErrInvalidState", err)
+	}
+}
+
+func TestPidfileWrittenAndRemoved(t *testing.T) {
+	inst, sub := startFake(t, modeNormal, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	info, err := pidfile.Read(inst.pidfilePath())
+	if err != nil {
+		t.Fatalf("pidfile.Read() error while running: %v", err)
+	}
+	if info.PID <= 0 {
+		t.Errorf("pid = %d, want a positive pid", info.PID)
+	}
+	if time.Since(info.StartedAt) > lifecycleTimeout {
+		t.Errorf("started_at = %v, want a recent time", info.StartedAt)
+	}
+
+	if err := inst.Stop(); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	_, err = pidfile.Read(inst.pidfilePath())
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("pidfile after stop: error = %v, want ErrNotExist", err)
+	}
+}
+
+func TestPidfileRemovedAfterCrash(t *testing.T) {
+	inst, sub := startFake(t, modeCrash, lifecycleTimeout)
+	waitForState(t, sub, StateCrashed)
+
+	select {
+	case <-inst.Done():
+	case <-time.After(lifecycleTimeout):
+		t.Fatal("instance did not finish after the crash")
+	}
+
+	_, err := pidfile.Read(inst.pidfilePath())
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("pidfile after crash: error = %v, want ErrNotExist", err)
 	}
 }
