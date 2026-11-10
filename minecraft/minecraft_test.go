@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
+	"github.com/emiHuy/mc-server-manager/internal/pidfile"
 )
 
 // recordingWriter stands in for the server's stdin. It is deliberately not
@@ -541,5 +544,112 @@ func TestStatusUptimeIsZeroUnlessRunning(t *testing.T) {
 		if got := inst.Status().Uptime; got != 0 {
 			t.Errorf("state %v: Uptime = %v, want 0", state, got)
 		}
+	}
+}
+
+func TestLooksLikeJava(t *testing.T) {
+	tests := []struct {
+		name string
+		proc string
+		want bool
+	}{
+		{"java", "java", true},
+		{"java.exe", "java.exe", true},
+		{"javaw.exe", "javaw.exe", true},
+		{"uppercase", "Java", true},
+		{"mixed case exe", "JAVA.EXE", true},
+		{"bash", "bash", false},
+		{"test binary", "minecraft.test.exe", false},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeJava(tt.proc); got != tt.want {
+				t.Errorf("looksLikeJava(%q) = %v, want %v", tt.proc, got, tt.want)
+			}
+		})
+	}
+}
+
+// deadPID returns the PID of a process that has already exited.
+func deadPID(t *testing.T) int {
+	t.Helper()
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("cannot run helper process: %v", err)
+	}
+	return cmd.Process.Pid
+}
+
+func TestCheckStale(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, path string) // nil means no pidfile
+		wantErr     bool
+		wantRemoved bool
+	}{
+		{
+			name:        "no pidfile",
+			setup:       nil,
+			wantRemoved: true, // nothing to keep either
+		},
+		{
+			name: "corrupt pidfile",
+			setup: func(t *testing.T, path string) {
+				if err := os.WriteFile(path, []byte("not json"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantRemoved: true,
+		},
+		{
+			name: "dead pid",
+			setup: func(t *testing.T, path string) {
+				info := pidfile.Info{PID: deadPID(t), StartedAt: time.Now()}
+				if err := pidfile.Write(path, info); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantRemoved: true,
+		},
+		{
+			name: "live pid that is not java",
+			setup: func(t *testing.T, path string) {
+				// The test binary is alive but is not named java, so this
+				// looks like a reused PID.
+				info := pidfile.Info{PID: os.Getpid(), StartedAt: time.Now()}
+				if err := pidfile.Write(path, info); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantRemoved: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+			path := inst.pidfilePath()
+			if tt.setup != nil {
+				tt.setup(t, path)
+			}
+
+			err := inst.CheckStale()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("CheckStale() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			_, statErr := os.Stat(path)
+			removed := errors.Is(statErr, os.ErrNotExist)
+			if removed != tt.wantRemoved {
+				t.Errorf("pidfile removed = %v, want %v", removed, tt.wantRemoved)
+			}
+		})
 	}
 }

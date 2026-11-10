@@ -32,6 +32,11 @@ func main() {
 	slog.Info("application starting")
 
 	instance := minecraft.New(conf.Minecraft)
+	if err := instance.CheckStale(); err != nil {
+		slog.Error("startup check failed", "error", err)
+		os.Exit(1)
+	}
+
 	server := api.New(instance, conf.API)
 	slog.Info("starting api server")
 

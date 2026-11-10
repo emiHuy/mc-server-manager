@@ -23,6 +23,7 @@ import (
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
 	"github.com/emiHuy/mc-server-manager/internal/pidfile"
 	"github.com/emiHuy/mc-server-manager/internal/portcheck"
+	"github.com/emiHuy/mc-server-manager/internal/proc"
 	"github.com/emiHuy/mc-server-manager/internal/sysmetrics"
 )
 
@@ -36,7 +37,8 @@ const (
 	eventSubscriberCapacity   = 64
 	metricsSubscriberCapacity = 4
 
-	pidfileName = "mcsm.pid"
+	pidfileName         = "mcsm.pid"
+	staleStartTolerance = 5 * time.Second
 )
 
 // Instance manages one Minecraft server process.
@@ -106,6 +108,42 @@ func New(conf config.MinecraftConfig) *Instance {
 		metrics:         fanout.New[Metrics]("metrics", metricsSubscriberCapacity, 1),
 		metricsInterval: defaultMetricsInterval,
 	}
+}
+
+// CheckStale refuses if the pidfile points at a live Java process.
+// A pidfile that is unreadable, or that points at a dead or unrelated process, is a leftover and is removed.
+func (inst *Instance) CheckStale() error {
+	path := inst.pidfilePath()
+
+	info, err := pidfile.Read(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		slog.Warn("removing unreadable pidfile", "path", path, "error", err)
+		inst.removePidfile()
+		return nil
+	}
+
+	p, err := proc.Lookup(info.PID)
+	if errors.Is(err, proc.ErrNotFound) {
+		slog.Info("removing stale pidfile, process is gone", "pid", info.PID)
+		inst.removePidfile()
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot check whether minecraft server (pid %d) is still running: %w", info.PID, err)
+	}
+
+	// The real server started before the pidfile was written. A process that
+	// started later is an unrelated one that reused the PID.
+	if !looksLikeJava(p.Name) || p.StartedAt.After(info.StartedAt.Add(staleStartTolerance)) {
+		slog.Info("removing stale pidfile, pid belongs to another process", "pid", info.PID, "name", p.Name)
+		inst.removePidfile()
+		return nil
+	}
+
+	return fmt.Errorf("a minecraft server is already running (pid %d, started %s); stop it or delete %s if it is not one", info.PID, info.StartedAt.Format(time.RFC3339), path)
 }
 
 // Start launches the server process and returns without waiting for the world to load.
@@ -463,6 +501,10 @@ func (inst *Instance) removePidfile() {
 	if err := pidfile.Remove(inst.pidfilePath()); err != nil {
 		slog.Warn("cannot remove pidfile", "path", inst.pidfilePath(), "error", err)
 	}
+}
+
+func looksLikeJava(name string) bool {
+	return strings.Contains(strings.ToLower(name), "java")
 }
 
 // watch is the only caller of cmd.Wait.
