@@ -16,6 +16,7 @@ import (
 
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
+	"github.com/emiHuy/mc-server-manager/internal/pidfile"
 )
 
 // These tests run the real Start, Stop, and Kill code against a fake server.
@@ -750,5 +751,45 @@ func TestRestartWhileStopping(t *testing.T) {
 	err = inst.Restart()
 	if !errors.Is(err, ErrInvalidState) {
 		t.Errorf("Restart() error = %v, want ErrInvalidState", err)
+	}
+}
+
+func TestPidfileWrittenAndRemoved(t *testing.T) {
+	inst, sub := startFake(t, modeNormal, lifecycleTimeout)
+	waitForState(t, sub, StateRunning)
+
+	info, err := pidfile.Read(inst.pidfilePath())
+	if err != nil {
+		t.Fatalf("pidfile.Read() error while running: %v", err)
+	}
+	if info.PID <= 0 {
+		t.Errorf("pid = %d, want a positive pid", info.PID)
+	}
+	if time.Since(info.StartedAt) > lifecycleTimeout {
+		t.Errorf("started_at = %v, want a recent time", info.StartedAt)
+	}
+
+	if err := inst.Stop(); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	_, err = pidfile.Read(inst.pidfilePath())
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("pidfile after stop: error = %v, want ErrNotExist", err)
+	}
+}
+
+func TestPidfileRemovedAfterCrash(t *testing.T) {
+	inst, sub := startFake(t, modeCrash, lifecycleTimeout)
+	waitForState(t, sub, StateCrashed)
+
+	select {
+	case <-inst.Done():
+	case <-time.After(lifecycleTimeout):
+		t.Fatal("instance did not finish after the crash")
+	}
+
+	_, err := pidfile.Read(inst.pidfilePath())
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("pidfile after crash: error = %v, want ErrNotExist", err)
 	}
 }

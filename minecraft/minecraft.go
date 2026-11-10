@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
+	"github.com/emiHuy/mc-server-manager/internal/pidfile"
 	"github.com/emiHuy/mc-server-manager/internal/portcheck"
 	"github.com/emiHuy/mc-server-manager/internal/sysmetrics"
 )
@@ -33,6 +35,8 @@ const (
 	consoleSubscriberCapacity = 64
 	eventSubscriberCapacity   = 64
 	metricsSubscriberCapacity = 4
+
+	pidfileName = "mcsm.pid"
 )
 
 // Instance manages one Minecraft server process.
@@ -104,20 +108,6 @@ func New(conf config.MinecraftConfig) *Instance {
 	}
 }
 
-func (inst *Instance) preflight() error {
-	host, port, err := serverAddrFromProperties(inst.conf.Directory)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrPreflight, err)
-	}
-
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	err = portcheck.Available(addr)
-	if err != nil {
-		return fmt.Errorf("%w: %s is not available: %w", ErrPreflight, addr, err)
-	}
-	return nil
-}
-
 // Start launches the server process and returns without waiting for the world to load.
 // The state stays starting until EventServerReady.
 func (inst *Instance) Start() error {
@@ -173,6 +163,8 @@ func (inst *Instance) Start() error {
 		reader.Close()
 		return fmt.Errorf("cannot start minecraft server: %w", err)
 	}
+
+	inst.writePidfile(cmd.Process.Pid)
 
 	writer.Close()
 	consoleDone := make(chan struct{})
@@ -438,6 +430,41 @@ func (inst *Instance) SubscribeMetrics() ([]Metrics, *fanout.Subscription[Metric
 	return latest, sub
 }
 
+// preflight checks if the specified server address is available for use.
+func (inst *Instance) preflight() error {
+	host, port, err := serverAddrFromProperties(inst.conf.Directory)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrPreflight, err)
+	}
+
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	err = portcheck.Available(addr)
+	if err != nil {
+		return fmt.Errorf("%w: %s is not available: %w", ErrPreflight, addr, err)
+	}
+	return nil
+}
+
+func (inst *Instance) pidfilePath() string {
+	return filepath.Join(inst.conf.Directory, pidfileName)
+}
+
+// writePidfile records the server's PID and start time.
+// It runs with inst.mu held, so it must not take it.
+func (inst *Instance) writePidfile(pid int) {
+	info := pidfile.Info{PID: pid, StartedAt: time.Now()}
+	if err := pidfile.Write(inst.pidfilePath(), info); err != nil {
+		slog.Warn("cannot write pidfile", "path", inst.pidfilePath(), "error", err)
+	}
+}
+
+// removePidfile deletes the pidfile. It runs with inst.mu held.
+func (inst *Instance) removePidfile() {
+	if err := pidfile.Remove(inst.pidfilePath()); err != nil {
+		slog.Warn("cannot remove pidfile", "path", inst.pidfilePath(), "error", err)
+	}
+}
+
 // watch is the only caller of cmd.Wait.
 // It records how the process ended and clears the per-launch fields.
 func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone chan struct{}) {
@@ -473,6 +500,7 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 		inst.cmd = nil
 		inst.stdin = nil
 		inst.exited = nil
+		inst.removePidfile()
 	}
 	inst.mu.Unlock()
 
