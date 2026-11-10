@@ -1,8 +1,6 @@
 # mc-server-manager
 
-A lightweight manager for a self-hosted Minecraft server. It runs the server, tracks its state, console, players, and resource use, and exposes everything through a web dashboard, a CLI, and an HTTP API.
-
-Meant to sit next to one server on a trusted machine.
+A lightweight manager for a self-hosted Minecraft server. Runs on the host machine and enables remote administration through a web dashboard, CLI, and HTTP API.
 
 ![Dashboard](docs/dashboard.png)
 
@@ -87,3 +85,5 @@ go vet ./...
 - Scheduled backups
 - Scheduled online/offline hours
 - Security hardening (check commands sent, bind to a tailnet address)
+- Server properties + config editor
+- ESP32 server monitoring
