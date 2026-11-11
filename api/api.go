@@ -27,13 +27,15 @@ var webFiles embed.FS
 type Server struct {
 	httpServer *http.Server
 	instance   *minecraft.Instance
+	restarter  *minecraft.Restarter
 	token      string
 }
 
-func New(instance *minecraft.Instance, conf config.APIConfig) *Server {
+func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecraft.Restarter) *Server {
 	s := Server{
-		instance: instance,
-		token:    conf.Token,
+		instance:  instance,
+		restarter: restarter,
+		token:     conf.Token,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -70,6 +72,7 @@ func (s *Server) routes() *http.ServeMux {
 	handle(mux, http.MethodPost, "/api/server/stop", s.handleServerStop)
 	handle(mux, http.MethodPost, "/api/server/kill", s.handleServerKill)
 	handle(mux, http.MethodPost, "/api/server/restart", s.handleServerRestart)
+	handle(mux, http.MethodPost, "/api/server/auto-restart", s.handleServerAutoRestart)
 	handle(mux, http.MethodPost, "/api/server/command", s.handleServerCommand)
 	handle(mux, http.MethodGet, "/api/server/console", s.handleServerConsole)
 	handle(mux, http.MethodGet, "/api/server/metrics", s.handleServerMetrics)

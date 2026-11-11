@@ -1,3 +1,4 @@
 config.toml
 mcsm.pid
-mcsm-manager.exe
+mc-server-manager.exe
+mcsm.exe

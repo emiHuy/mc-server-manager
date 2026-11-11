@@ -11,7 +11,8 @@ import (
 
 func newAuthTestServer(t *testing.T, token string) *httptest.Server {
 	t.Helper()
-	s := New(newStoppedInstance(), config.APIConfig{Token: token})
+	inst := newStoppedInstance()
+	s := New(config.APIConfig{Token: token}, inst, newTestRestarter(t, inst))
 	return httptest.NewTestServer(t, s.httpServer.Handler)
 }
 
