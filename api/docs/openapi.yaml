@@ -102,6 +102,41 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/server/auto-restart:
+    post:
+      tags: [Control]
+      summary: Turn auto-restart on or off
+      description: |
+        Changes the setting until the manager is restarted; it is not saved,
+        and the `auto_restart.enabled` config value applies again on the next
+        launch.
+
+        Turning it on starts a fresh crash streak. It only affects future
+        crashes: a server that is already `crashed` stays down until it is
+        started again. Turning it off cancels any pending restart.
+
+        The response shows the setting as it stands afterwards. While the
+        manager is shutting down, enabling is ignored and `enabled` stays
+        `false`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutoRestartRequest" }
+      responses:
+        "200":
+          description: Current auto-restart status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoRestart" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "415":
+          description: Content-Type is not application/json
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/server/command:
     post:
       tags: [Control]
@@ -253,6 +288,7 @@ components:
         players:
           type: array
           items: { type: string }
+        auto_restart: { $ref: "#/components/schemas/AutoRestart" }
 
     Metrics:
       type: object
@@ -305,3 +341,34 @@ components:
       required: [command]
       properties:
         command: { type: string, example: say hello }
+
+    AutoRestart:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        restarts:
+          type: integer
+          description: >
+            Restart attempts in the current crash streak, including one that is
+            still waiting. Not a lifetime total: it returns to 0 after the
+            server has stayed up for 10 minutes, or when auto-restart is turned
+            back on.
+        max_restarts:
+          type: integer
+          description: How many consecutive attempts are made before giving up
+        next_retry_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the pending restart will start, or null if none is waiting
+        gave_up:
+          type: boolean
+          description: >
+            The limit was reached and no further restarts will be tried. The
+            server stays down until it is started again.
+
+    AutoRestartRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean, example: true }
