@@ -32,6 +32,10 @@ func validConfig() Config {
 			StopTimeout:    30 * time.Second,
 			StartupTimeout: 2 * time.Minute,
 		},
+		AutoRestart: AutoRestartConfig{
+			MaxRestarts:    defaultMaxRestarts,
+			InitialBackoff: defaultInitialBackoff,
+		},
 	}
 }
 
@@ -180,6 +184,20 @@ func TestValidate(t *testing.T) {
 			mutate: func(c *Config) { c.API.Token = placeholderToken },
 			want:   []string{"api.token"},
 		},
+		{
+			name:   "max_restarts below 1",
+			mutate: func(c *Config) { c.AutoRestart.MaxRestarts = -1 },
+			want:   []string{"auto_restart.max_restarts"},
+		},
+		{
+			name:   "initial_backoff below minimum",
+			mutate: func(c *Config) { c.AutoRestart.InitialBackoff = minInitialBackoff - time.Millisecond },
+			want:   []string{"auto_restart.initial_backoff"},
+		},
+		{
+			name:   "initial_backoff at minimum is valid",
+			mutate: func(c *Config) { c.AutoRestart.InitialBackoff = minInitialBackoff },
+		},
 	}
 
 	for _, tt := range tests {
@@ -229,11 +247,16 @@ func TestValidateNamesOnlyMissingKeys(t *testing.T) {
 func TestLoadConfig(t *testing.T) {
 	t.Run("every field is read", func(t *testing.T) {
 		path := writeConfig(t, requiredTOML+`gui = true
-stop_timeout = "45s"
+			stop_timeout = "45s"
 
-[options]
-log_level = "debug"
-`)
+			[auto_restart]
+			enabled = true
+			max_restarts = 3
+			initial_backoff = "10s"
+
+			[options]
+			log_level = "debug"
+		`)
 
 		conf, err := loadConfig(path)
 		if err != nil {
@@ -265,6 +288,17 @@ log_level = "debug"
 		if conf.Minecraft.Autostart {
 			t.Error("Autostart = true, want false when omitted")
 		}
+
+		a := conf.AutoRestart
+		if !a.Enabled {
+			t.Error("Enabled = false, want true")
+		}
+		if a.MaxRestarts != 3 {
+			t.Errorf("MaxRestarts = %d, want 3", a.MaxRestarts)
+		}
+		if a.InitialBackoff != 10*time.Second {
+			t.Errorf("InitialBackoff = %v, want 10s", a.InitialBackoff)
+		}
 	})
 
 	t.Run("optional fields get defaults", func(t *testing.T) {
@@ -283,6 +317,17 @@ log_level = "debug"
 		}
 		if conf.Options.LogLevel != "" {
 			t.Errorf("LogLevel = %q, want empty when omitted", conf.Options.LogLevel)
+		}
+
+		a := conf.AutoRestart
+		if a.Enabled {
+			t.Error("Enabled = true, want false when omitted")
+		}
+		if a.MaxRestarts != defaultMaxRestarts {
+			t.Errorf("MaxRestarts = %d, want the default %d", a.MaxRestarts, defaultMaxRestarts)
+		}
+		if a.InitialBackoff != defaultInitialBackoff {
+			t.Errorf("InitialBackoff = %v, want the default %v", a.InitialBackoff, defaultInitialBackoff)
 		}
 	})
 
@@ -309,6 +354,27 @@ log_level = "debug"
 			if conf.Minecraft.StopTimeout != tt.want {
 				t.Errorf("stop_timeout = %s: StopTimeout = %v, want %v", tt.value, conf.Minecraft.StopTimeout, tt.want)
 			}
+		}
+	})
+
+	t.Run("zero max_restarts takes the default", func(t *testing.T) {
+		path := writeConfig(t, requiredTOML+"\n[auto_restart]\nmax_restarts = 0\n")
+
+		conf, err := loadConfig(path)
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if conf.AutoRestart.MaxRestarts != defaultMaxRestarts {
+			t.Errorf("MaxRestarts = %d, want the default %d", conf.AutoRestart.MaxRestarts, defaultMaxRestarts)
+		}
+	})
+
+	t.Run("too-small initial_backoff is rejected", func(t *testing.T) {
+		path := writeConfig(t, requiredTOML+"\n[auto_restart]\ninitial_backoff = \"1ms\"\n")
+
+		_, err := loadConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "auto_restart.initial_backoff") {
+			t.Errorf("loadConfig() error = %v, want it to name auto_restart.initial_backoff", err)
 		}
 	})
 }

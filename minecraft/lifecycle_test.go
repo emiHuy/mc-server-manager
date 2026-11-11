@@ -39,6 +39,7 @@ const (
 	modeCrash           = "crash"             // becomes ready, then exits 1
 	modePlayers         = "players"           // becomes ready, Steve joins, exits 0 on "stop"
 	modeExitOnStop      = "exit-on-stop"
+	modeCrashOnce       = "crash-once"
 )
 
 func TestMain(m *testing.M) {
@@ -89,6 +90,13 @@ func runFakeServer(mode string) {
 		scanner.Err()
 		// Stdin closed without a stop.
 		os.Exit(1)
+	case modeCrashOnce:
+		if _, err := os.Stat("crashed"); err != nil {
+			_ = os.WriteFile("crashed", nil, 0o644)
+			ready()
+			os.Exit(1)
+		}
+		ready()
 	default:
 		ready()
 	}
