@@ -11,7 +11,8 @@ A lightweight manager for a self-hosted Minecraft server. Runs on the host machi
 - Player tracking and events (joins, leaves, chat, warnings, errors)
 - CPU, memory, and disk metrics
 - Web dashboard, CLI (`mcsm`), and API
-- Optional bearer-token authentication
+- Automatic restart after crashes
+- Bearer-token authentication (required when listening beyond localhost)
 
 ## Requirements
 
@@ -41,8 +42,8 @@ Copy `config/config.example.toml` to `config/config.toml` and edit it.
 | `minecraft.*` | Server directory, jar, and memory settings. |
 | `minecraft.autostart` | Start the server when the manager starts. |
 | `auto_restart.*` | Restart the server after a crash. Off by default. |
-| `api.host`, `api.port` | Default `127.0.0.1:8080`. Use `0.0.0.0` to allow other machines. |
-| `api.token` | Optional, at least 16 characters. You can generate one with `./mc-server-manager token`. |
+| `api.host`, `api.port` | Default `127.0.0.1:8080`. Set api.host = "tailscale" to automatically bind to your Tailscale IP, or 0.0.0.0 for all interfaces. |
+| `api.token` |  At least 16 characters. Required unless `api.host` is a loopback address. You can generate one with `./mc-server-manager token`. |
 
 ## CLI
 
@@ -51,6 +52,7 @@ Copy `config/config.example.toml` to `config/config.toml` and edit it.
   mcsm start --wait
   mcsm command say hello
   mcsm logs -f
+  mcsm auto-restart true
 ```
 Run `mcsm help` for all commands. Set `MCSM_TOKEN` if the manager requires a token, and `MCSM_ADDR` if it isn't at the default `http://127.0.0.1:8080`.
 
@@ -67,10 +69,11 @@ stopped -> starting -> running -> stopping -> stopped
 ```
 
 `starting` lasts until the console prints its "Done" line.
+With `auto_restart` enabled, a crashed server is restarted after a delay that doubles each time, up to 5 minutes, and the manager gives up after `max_restarts` crashes in a row. A server you stop yourself is never restarted. `mcsm auto-restart true|false` changes the setting until the manager restarts.
 
 ## Known limitations
 
-- The API is plain HTTP, so the token is visible to anyone sniffing the network. With no token and a non-loopback host, anyone on the network can control the server.
+- The API is plain HTTP, so the token is visible to anyone sniffing the network. Only expose it on a network you trust, such as a VPN.
 - A slow stream client can miss messages. Re-fetch `/api/server/status` after reconnecting.
 - Readiness detection expects vanilla's "Done" line.
 
@@ -85,6 +88,5 @@ go vet ./...
 
 - Scheduled backups
 - Scheduled online/offline hours
-- Security hardening (check commands sent, bind to a tailnet address)
 - Server properties + config editor
 - ESP32 server monitoring

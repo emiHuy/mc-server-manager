@@ -198,6 +198,47 @@ func TestValidate(t *testing.T) {
 			name:   "initial_backoff at minimum is valid",
 			mutate: func(c *Config) { c.AutoRestart.InitialBackoff = minInitialBackoff },
 		},
+		{
+			name:   "loopback host, no token",
+			mutate: func(c *Config) { c.API.Host = "127.0.0.1"; c.API.Token = "" },
+		},
+		{
+			name:   "localhost, no token",
+			mutate: func(c *Config) { c.API.Host = "localhost"; c.API.Token = "" },
+		},
+		{
+			name:   "ipv6 loopback, no token",
+			mutate: func(c *Config) { c.API.Host = "::1"; c.API.Token = "" },
+		},
+		{
+			name:   "all interfaces, no token",
+			mutate: func(c *Config) { c.API.Host = "0.0.0.0"; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "lan address, no token",
+			mutate: func(c *Config) { c.API.Host = "192.168.1.20"; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "hostname, no token",
+			mutate: func(c *Config) { c.API.Host = "mc.example.com"; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "all interfaces, with token",
+			mutate: func(c *Config) { c.API.Host = "0.0.0.0"; c.API.Token = strings.Repeat("a", minTokenLength) },
+		},
+		{
+			name:   "tailscale host, no token",
+			mutate: func(c *Config) { c.API.Host = TailscaleHost; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "tailscale host, with token",
+			mutate: func(c *Config) { c.API.Host = TailscaleHost; c.API.Token = strings.Repeat("a", minTokenLength) },
+			want:   nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -377,6 +418,27 @@ func TestLoadConfig(t *testing.T) {
 			t.Errorf("loadConfig() error = %v, want it to name auto_restart.initial_backoff", err)
 		}
 	})
+
+	t.Run("tailscale host is kept, not replaced by the default", func(t *testing.T) {
+		path := writeConfig(t, requiredTOML+"\n[api]\nhost = \"tailscale\"\ntoken = \""+strings.Repeat("a", minTokenLength)+"\"\n")
+
+		conf, err := loadConfig(path)
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if conf.API.Host != TailscaleHost {
+			t.Errorf("API.Host = %q, want %q", conf.API.Host, TailscaleHost)
+		}
+	})
+
+	t.Run("tailscale host without a token is rejected", func(t *testing.T) {
+		path := writeConfig(t, requiredTOML+"\n[api]\nhost = \"tailscale\"\n")
+
+		_, err := loadConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "api.token") {
+			t.Errorf("loadConfig() error = %v, want it to mention api.token", err)
+		}
+	})
 }
 
 func TestLoadConfigErrors(t *testing.T) {
@@ -502,6 +564,36 @@ func TestInitLoggerLevels(t *testing.T) {
 				if got := logger.Enabled(ctx, check.level); got != check.want {
 					t.Errorf("level %q: Enabled(%v) = %v, want %v", tt.level, check.level, got, check.want)
 				}
+			}
+		})
+	}
+}
+
+func TestAPIConfigIsLoopback(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{"empty defaults to loopback", "", true},
+		{"localhost", "localhost", true},
+		{"localhost any case", "LOCALHOST", true},
+		{"ipv4 loopback", "127.0.0.1", true},
+		{"other 127 address", "127.0.0.5", true},
+		{"ipv6 loopback", "::1", true},
+		{"bracketed ipv6 loopback", "[::1]", true},
+		{"all ipv4 interfaces", "0.0.0.0", false},
+		{"all ipv6 interfaces", "::", false},
+		{"lan address", "192.168.1.20", false},
+		{"tailscale placeholder", "tailscale", false},
+		{"hostname", "example.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isLoopbackHost(tt.host)
+			if got != tt.want {
+				t.Errorf("APIConfig{Host: %q}.IsLoopback() = %v, want %v", tt.host, got, tt.want)
 			}
 		})
 	}

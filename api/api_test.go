@@ -573,6 +573,11 @@ func TestServerCommandValidation(t *testing.T) {
 		{"oversized body", "application/json", `{"command":"` + strings.Repeat("a", 1<<20) + `"}`, http.StatusBadRequest},
 		// Passes validation, then hits the state check.
 		{"valid command, server stopped", "application/json", `{"command":"list"}`, http.StatusConflict},
+		{"bare slash", "application/json", `{"command":"/"}`, http.StatusBadRequest},
+		// 1001 bytes: under the 4 KB body limit, so the command cap rejects it, not the body limit.
+		{"over the command length limit", "application/json", `{"command":"` + strings.Repeat("a", 1001) + `"}`, http.StatusBadRequest},
+		// Valid once the slash is stripped, then it hits the state check.
+		{"leading slash is stripped", "application/json", `{"command":"/list"}`, http.StatusConflict},
 	}
 
 	for _, tt := range tests {

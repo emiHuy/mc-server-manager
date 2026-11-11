@@ -653,3 +653,71 @@ func TestCheckStale(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		// accepted
+		{"plain", "list", "list", false},
+		{"surrounding whitespace", "  list  ", "list", false},
+		{"trailing newline is trimmed", "list\n", "list", false},
+		{"leading slash", "/list", "list", false},
+		{"slash then space", "/ list", "list", false},
+		{"whitespace before slash", "  /list", "list", false},
+		{"only one slash is stripped", "//list", "/list", false},
+		{"slash inside is untouched", "say a/b", "say a/b", false},
+		{"at the length limit", strings.Repeat("a", maxCommandLength), strings.Repeat("a", maxCommandLength), false},
+		{"slash does not count toward the limit", "/" + strings.Repeat("a", maxCommandLength), strings.Repeat("a", maxCommandLength), false},
+		{"limit is in bytes, at the limit", strings.Repeat("é", maxCommandLength/2), strings.Repeat("é", maxCommandLength/2), false},
+
+		// rejected
+		{"empty", "", "", true},
+		{"whitespace only", "   ", "", true},
+		{"bare slash", "/", "", true},
+		{"slash and spaces", " /  ", "", true},
+		{"over the limit", strings.Repeat("a", maxCommandLength+1), "", true},
+		{"limit is in bytes, over the limit", strings.Repeat("é", maxCommandLength/2+1), "", true},
+		{"embedded newline", "say hi\nstop", "", true},
+		{"embedded carriage return", "say hi\rstop", "", true},
+		{"embedded tab", "say\thi", "", true},
+		{"bell character", "say \x07", "", true},
+		{"nul byte", "say \x00", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeCommand(tt.in)
+
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidCommand) {
+					t.Fatalf("error = %v, want ErrInvalidCommand", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Validation must run before the state check, so a bad command is reported as
+// a bad command even when the server is stopped.
+func TestSendValidatesBeforeState(t *testing.T) {
+	inst := New(config.MinecraftConfig{})
+
+	if err := inst.Send("/"); !errors.Is(err, ErrInvalidCommand) {
+		t.Errorf("Send(%q) error = %v, want ErrInvalidCommand", "/", err)
+	}
+	// Valid once the slash is stripped, so it gets as far as the state check.
+	if err := inst.Send("/list"); !errors.Is(err, ErrInvalidState) {
+		t.Errorf("Send(%q) error = %v, want ErrInvalidState", "/list", err)
+	}
+}

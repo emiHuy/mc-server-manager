@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ const (
 	defaultMaxRestarts    = 5
 	defaultInitialBackoff = 5 * time.Second
 	minInitialBackoff     = 1 * time.Second
+	TailscaleHost         = "tailscale"
 )
 
 // Config contains the application configuration.
@@ -144,6 +146,12 @@ func (c *Config) validate() error {
 		problems = append(problems, "api.port must be between 1 and 65535")
 	}
 
+	if c.API.Token == "" && !isLoopbackHost(c.API.Host) {
+		problems = append(problems, fmt.Sprintf(
+			"api.token is required when api.host (%q) is not a loopback address; run `mc-server-manager token` to generate one",
+			c.API.Host))
+	}
+
 	if c.API.Token != "" {
 		switch {
 		case c.API.Token == placeholderToken:
@@ -188,4 +196,15 @@ func (c *Config) InitLogger() {
 		Level: level,
 	})
 	slog.SetDefault(slog.New(handler))
+}
+
+// isLoopbackHost reports whether host only accepts connections from this machine.
+// An empty host counts as loopback because it defaults to 127.0.0.1.
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
