@@ -1,4 +1,8 @@
 [api]
+# Host address to bind the API and web dashboard to.
+# - Use "127.0.0.1" for localhost only.
+# - Use "0.0.0.0" for all network interfaces.
+# - Use "tailscale" to automatically discover and bind to your Tailscale IP.
 host = "127.0.0.1"
 port = 8080
 token = "<generated_token>" # optional
