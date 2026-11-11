@@ -44,7 +44,7 @@ func main() {
 		conf.AutoRestart.InitialBackoff,
 	)
 
-	server := api.New(instance, conf.API)
+	server := api.New(conf.API, instance, restarter)
 	slog.Info("starting api server")
 
 	apiErr := make(chan error, 1)

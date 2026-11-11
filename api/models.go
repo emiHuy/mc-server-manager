@@ -41,6 +41,20 @@ func newConsoleLineResponse(line string) apitypes.ConsoleLineResponse {
 	return apitypes.ConsoleLineResponse{Line: line}
 }
 
+func newAutoRestartResponse(s minecraft.RestarterSnapshot) apitypes.AutoRestartResponse {
+	resp := apitypes.AutoRestartResponse{
+		Enabled:     s.Enabled,
+		Restarts:    s.Restarts,
+		MaxRestarts: s.MaxRestarts,
+		GaveUp:      s.GaveUp,
+	}
+	if !s.NextRetryAt.IsZero() {
+		t := s.NextRetryAt
+		resp.NextRetryAt = &t
+	}
+	return resp
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

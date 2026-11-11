@@ -28,7 +28,18 @@ import (
 
 // baseURL is a placeholder host. httptest.NewTestServer uses an in-memory
 // network, and its client sends every request to the server whatever the host.
-const baseURL = "http://example.com"
+const (
+	baseURL          = "http://example.com"
+	testRestarterMax = 5
+)
+
+// newTestRestarter returns a disabled restarter for tests that don't care about it.
+func newTestRestarter(t *testing.T, inst *minecraft.Instance) *minecraft.Restarter {
+	t.Helper()
+	r := minecraft.NewRestarter(inst, false, testRestarterMax, time.Second)
+	t.Cleanup(r.Disable)
+	return r
+}
 
 // newTestServer serves the API's real handler (s.httpServer.Handler), so any
 // middleware wrapped around the mux is covered too. The zero APIConfig is fine
@@ -36,8 +47,15 @@ const baseURL = "http://example.com"
 func newTestServer(t *testing.T, inst *minecraft.Instance) *httptest.Server {
 	t.Helper()
 
-	s := New(inst, config.APIConfig{})
+	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst))
 	return httptest.NewTestServer(t, s.httpServer.Handler)
+}
+
+func newTestServerWithRestarter(t *testing.T, inst *minecraft.Instance, r *minecraft.Restarter) *httptest.Server {
+	t.Helper()
+
+	s := New(config.APIConfig{}, inst, r)
+	return httptest.NewServer(s.httpServer.Handler) // plus whatever cleanup your helper already does
 }
 
 // newStoppedInstance returns an instance that has never been started.
@@ -119,9 +137,10 @@ func readJSON[T any](t *testing.T, resp *http.Response) (T, string) {
 // package's response types, so the tests check the JSON a client actually sees.
 
 type statusBody struct {
-	State         string   `json:"state"`
-	UptimeSeconds int64    `json:"uptime_seconds"`
-	Players       []string `json:"players"`
+	State         string          `json:"state"`
+	UptimeSeconds int64           `json:"uptime_seconds"`
+	Players       []string        `json:"players"`
+	AutoRestart   autoRestartBody `json:"auto_restart"`
 }
 
 type consoleBody struct {
@@ -145,12 +164,21 @@ type eventBody struct {
 	State   string `json:"state"`
 }
 
+type autoRestartBody struct {
+	Enabled     bool    `json:"enabled"`
+	Restarts    int     `json:"restarts"`
+	MaxRestarts int     `json:"max_restarts"`
+	NextRetryAt *string `json:"next_retry_at"`
+	GaveUp      bool    `json:"gave_up"`
+}
+
 // ---------------------------------------------------------------------------
 // Server construction
 // ---------------------------------------------------------------------------
 
 func TestNewSetsReadHeaderTimeout(t *testing.T) {
-	s := New(newStoppedInstance(), config.APIConfig{})
+	inst := newStoppedInstance()
+	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst))
 
 	if s.httpServer.ReadHeaderTimeout <= 0 {
 		t.Error("ReadHeaderTimeout is not set; slow clients can hold connections open")
@@ -172,7 +200,8 @@ func TestNewBuildsAddress(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(newStoppedInstance(), tt.conf)
+			inst := newStoppedInstance()
+			s := New(tt.conf, inst, newTestRestarter(t, inst))
 			if s.httpServer.Addr != tt.want {
 				t.Errorf("Addr = %q, want %q", s.httpServer.Addr, tt.want)
 			}
@@ -184,7 +213,8 @@ func TestNewBuildsAddress(t *testing.T) {
 // in New. Without it, Shutdown waits on the open stream and hits its deadline.
 // It uses a real listener because httptest cannot set BaseContext.
 func TestShutdownEndsStreams(t *testing.T) {
-	s := New(newStoppedInstance(), config.APIConfig{})
+	inst := newStoppedInstance()
+	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst))
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -801,5 +831,199 @@ func TestStreamsRejectWrongMethod(t *testing.T) {
 				t.Errorf("status code = %d, want %d", resp.StatusCode, http.StatusMethodNotAllowed)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Auto-restart
+// ---------------------------------------------------------------------------
+
+func TestNewAutoRestartResponse(t *testing.T) {
+	retry := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+
+	t.Run("pending retry", func(t *testing.T) {
+		got := newAutoRestartResponse(minecraft.RestarterSnapshot{
+			Enabled:     true,
+			Restarts:    2,
+			MaxRestarts: 5,
+			NextRetryAt: retry,
+		})
+
+		if !got.Enabled || got.Restarts != 2 || got.MaxRestarts != 5 || got.GaveUp {
+			t.Errorf("response = %+v, want enabled, 2 of 5, not gave up", got)
+		}
+		if got.NextRetryAt == nil || !got.NextRetryAt.Equal(retry) {
+			t.Errorf("NextRetryAt = %v, want %v", got.NextRetryAt, retry)
+		}
+	})
+
+	t.Run("no retry pending is nil, not the zero time", func(t *testing.T) {
+		got := newAutoRestartResponse(minecraft.RestarterSnapshot{})
+
+		if got.NextRetryAt != nil {
+			t.Errorf("NextRetryAt = %v, want nil", got.NextRetryAt)
+		}
+	})
+
+	t.Run("gave up", func(t *testing.T) {
+		got := newAutoRestartResponse(minecraft.RestarterSnapshot{
+			Restarts:    5,
+			MaxRestarts: 5,
+			GaveUp:      true,
+		})
+
+		if got.Enabled || !got.GaveUp {
+			t.Errorf("response = %+v, want disabled and gave up", got)
+		}
+	})
+}
+
+func TestServerStatusAutoRestartDefault(t *testing.T) {
+	server := newTestServer(t, newStoppedInstance())
+
+	resp := get(t, server, "/api/server/status")
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	got, raw := readJSON[statusBody](t, resp)
+	ar := got.AutoRestart
+
+	if ar.Enabled || ar.Restarts != 0 || ar.GaveUp {
+		t.Errorf("auto_restart = %+v, want disabled with a clean streak", ar)
+	}
+	if ar.MaxRestarts != testRestarterMax {
+		t.Errorf("max_restarts = %d, want %d", ar.MaxRestarts, testRestarterMax)
+	}
+	if ar.NextRetryAt != nil {
+		t.Errorf("next_retry_at = %q, want null", *ar.NextRetryAt)
+	}
+	// Clients check for null, so the key must be present and never the zero time.
+	if !strings.Contains(raw, `"next_retry_at":null`) {
+		t.Errorf("body = %s, want next_retry_at present as null", raw)
+	}
+}
+
+func TestServerAutoRestartToggle(t *testing.T) {
+	inst := newStoppedInstance()
+	r := newTestRestarter(t, inst)
+	server := newTestServerWithRestarter(t, inst, r)
+
+	// The steps share one restarter, so each depends on the one before it.
+	steps := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"enable", `{"enabled":true}`, true},
+		{"enabling again changes nothing", `{"enabled":true}`, true},
+		{"disable", `{"enabled":false}`, false},
+	}
+
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			resp := post(t, server, "/api/server/auto-restart", "application/json", step.body)
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+
+			got, _ := readJSON[autoRestartBody](t, resp)
+			if got.Enabled != step.want {
+				t.Errorf("response enabled = %v, want %v", got.Enabled, step.want)
+			}
+			if got.MaxRestarts != testRestarterMax {
+				t.Errorf("response max_restarts = %d, want %d", got.MaxRestarts, testRestarterMax)
+			}
+
+			// The status endpoint must agree with what the toggle reported.
+			status, _ := readJSON[statusBody](t, get(t, server, "/api/server/status"))
+			if status.AutoRestart.Enabled != step.want {
+				t.Errorf("status enabled = %v, want %v", status.AutoRestart.Enabled, step.want)
+			}
+		})
+	}
+}
+
+func TestServerAutoRestartValidation(t *testing.T) {
+	inst := newStoppedInstance()
+	r := newTestRestarter(t, inst)
+	server := newTestServerWithRestarter(t, inst, r)
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		want        int
+	}{
+		{"wrong content type", "text/plain", `{"enabled":true}`, http.StatusUnsupportedMediaType},
+		{"no content type", "", `{"enabled":true}`, http.StatusUnsupportedMediaType},
+		{"malformed json", "application/json", `{`, http.StatusBadRequest},
+		{"empty body", "application/json", ``, http.StatusBadRequest},
+		// These decode fine but carry no usable value. Without the pointer
+		// field, each would silently switch the feature off.
+		{"missing field", "application/json", `{}`, http.StatusBadRequest},
+		{"misspelled field", "application/json", `{"enable":true}`, http.StatusBadRequest},
+		{"null", "application/json", `{"enabled":null}`, http.StatusBadRequest},
+		{"string instead of bool", "application/json", `{"enabled":"yes"}`, http.StatusBadRequest},
+		{"number instead of bool", "application/json", `{"enabled":1}`, http.StatusBadRequest},
+		{"two json values", "application/json", `{"enabled":true}{"enabled":false}`, http.StatusBadRequest},
+		{"oversized body", "application/json", `{"enabled":true,"x":"` + strings.Repeat("a", 1<<20) + `"}`, http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := post(t, server, "/api/server/auto-restart", tt.contentType, tt.body)
+
+			if resp.StatusCode != tt.want {
+				t.Fatalf("status code = %d, want %d", resp.StatusCode, tt.want)
+			}
+
+			body, _ := readJSON[errorResponse](t, resp)
+			if body.Error == "" {
+				t.Error("error response has no message")
+			}
+
+			// A rejected request must not touch the setting.
+			if r.Status().Enabled {
+				t.Error("a rejected request enabled auto-restart")
+			}
+		})
+	}
+}
+
+func TestServerAutoRestartRefusedAfterShutdown(t *testing.T) {
+	inst := newStoppedInstance()
+	r := newTestRestarter(t, inst)
+	server := newTestServerWithRestarter(t, inst, r)
+
+	r.Disable() // what shutdown does while the API is still answering
+
+	resp := post(t, server, "/api/server/auto-restart", "application/json", `{"enabled":true}`)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	// The response reports what actually happened, not what was asked for.
+	got, _ := readJSON[autoRestartBody](t, resp)
+	if got.Enabled {
+		t.Error("enabled = true after shutdown, want false")
+	}
+}
+
+func TestServerAutoRestartRejectsWrongMethod(t *testing.T) {
+	server := newTestServer(t, newStoppedInstance())
+
+	resp := get(t, server, "/api/server/auto-restart")
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status code = %d, want %d", resp.StatusCode, http.StatusMethodNotAllowed)
+	}
+	if allow := resp.Header.Get("Allow"); allow != http.MethodPost {
+		t.Errorf("Allow = %q, want %q", allow, http.MethodPost)
 	}
 }

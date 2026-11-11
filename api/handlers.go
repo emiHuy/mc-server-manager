@@ -16,6 +16,7 @@ const (
 	defaultConsoleLines = 100
 	maxConsoleLines     = 1000 // the size of the console history ring
 	maxCommandBody      = 4 << 10
+	maxAutoRestartBody  = 1 << 10
 )
 
 func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
@@ -24,6 +25,7 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 		State:         status.State.String(),
 		UptimeSeconds: int64(status.Uptime.Seconds()),
 		Players:       status.Players,
+		AutoRestart:   newAutoRestartResponse(s.restarter.Status()),
 	})
 }
 
@@ -146,6 +148,28 @@ func (s *Server) handleServerEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serveStream(r.Context(), sse, sub.C, newEventResponse)
+}
+
+func (s *Server) handleServerAutoRestart(w http.ResponseWriter, r *http.Request) {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, r, errUnsupportedMediaType)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAutoRestartBody)
+
+	var req apitypes.AutoRestartRequest
+	err = json.UnmarshalRead(r.Body, &req)
+	if err != nil || req.Enabled == nil {
+		writeError(w, r, errBadRequest)
+		return
+	}
+
+	s.restarter.SetEnabled(*req.Enabled)
+	slog.Info("auto-restart toggled", "enabled", *req.Enabled, "remote", r.RemoteAddr)
+
+	writeJSON(w, http.StatusOK, newAutoRestartResponse(s.restarter.Status()))
 }
 
 func (s *Server) handleServerConsoleStream(w http.ResponseWriter, r *http.Request) {

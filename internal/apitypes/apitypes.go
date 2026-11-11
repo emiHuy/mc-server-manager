@@ -1,3 +1,4 @@
+// Package apitypes defines the JSON request and response types shared by the HTTP API and its clients.
 package apitypes
 
 import "time"
@@ -7,9 +8,10 @@ type StateResponse struct {
 }
 
 type StatusResponse struct {
-	State         string   `json:"state"`
-	UptimeSeconds int64    `json:"uptime_seconds"`
-	Players       []string `json:"players"`
+	State         string              `json:"state"`
+	UptimeSeconds int64               `json:"uptime_seconds"`
+	Players       []string            `json:"players"`
+	AutoRestart   AutoRestartResponse `json:"auto_restart"`
 }
 
 type MetricsResponse struct {
@@ -43,4 +45,16 @@ type ConsoleLineResponse struct {
 
 type CommandRequest struct {
 	Command string `json:"command"`
+}
+
+type AutoRestartRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+type AutoRestartResponse struct {
+	Enabled     bool       `json:"enabled"`
+	Restarts    int        `json:"restarts"`
+	MaxRestarts int        `json:"max_restarts"`
+	NextRetryAt *time.Time `json:"next_retry_at"`
+	GaveUp      bool       `json:"gave_up"`
 }
