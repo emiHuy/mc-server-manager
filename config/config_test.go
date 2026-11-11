@@ -229,6 +229,16 @@ func TestValidate(t *testing.T) {
 			name:   "all interfaces, with token",
 			mutate: func(c *Config) { c.API.Host = "0.0.0.0"; c.API.Token = strings.Repeat("a", minTokenLength) },
 		},
+		{
+			name:   "tailscale host, no token",
+			mutate: func(c *Config) { c.API.Host = TailscaleHost; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "tailscale host, with token",
+			mutate: func(c *Config) { c.API.Host = TailscaleHost; c.API.Token = strings.Repeat("a", minTokenLength) },
+			want:   nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -406,6 +416,27 @@ func TestLoadConfig(t *testing.T) {
 		_, err := loadConfig(path)
 		if err == nil || !strings.Contains(err.Error(), "auto_restart.initial_backoff") {
 			t.Errorf("loadConfig() error = %v, want it to name auto_restart.initial_backoff", err)
+		}
+	})
+
+	t.Run("tailscale host is kept, not replaced by the default", func(t *testing.T) {
+		path := writeConfig(t, requiredTOML+"\n[api]\nhost = \"tailscale\"\ntoken = \""+strings.Repeat("a", minTokenLength)+"\"\n")
+
+		conf, err := loadConfig(path)
+		if err != nil {
+			t.Fatalf("loadConfig() error: %v", err)
+		}
+		if conf.API.Host != TailscaleHost {
+			t.Errorf("API.Host = %q, want %q", conf.API.Host, TailscaleHost)
+		}
+	})
+
+	t.Run("tailscale host without a token is rejected", func(t *testing.T) {
+		path := writeConfig(t, requiredTOML+"\n[api]\nhost = \"tailscale\"\n")
+
+		_, err := loadConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "api.token") {
+			t.Errorf("loadConfig() error = %v, want it to mention api.token", err)
 		}
 	})
 }

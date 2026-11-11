@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/emiHuy/mc-server-manager/api"
 	"github.com/emiHuy/mc-server-manager/config"
@@ -30,6 +33,16 @@ func main() {
 
 	conf.InitLogger()
 	slog.Info("application starting")
+
+	if conf.API.Host == config.TailscaleHost {
+		host, err := waitForTailscale(context.Background(), net.InterfaceAddrs, 500*time.Millisecond, 30*time.Second)
+		if err != nil {
+			slog.Error("failed to find tailscale host", "error", err)
+			return
+		}
+		conf.API.Host = host.String()
+		slog.Info("resolved tailscale host", "host", host.String())
+	}
 
 	instance := minecraft.New(conf.Minecraft)
 	if err := instance.CheckStale(); err != nil {

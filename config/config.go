@@ -25,6 +25,7 @@ const (
 	defaultMaxRestarts    = 5
 	defaultInitialBackoff = 5 * time.Second
 	minInitialBackoff     = 1 * time.Second
+	TailscaleHost         = "tailscale"
 )
 
 // Config contains the application configuration.
