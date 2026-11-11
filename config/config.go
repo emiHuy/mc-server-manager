@@ -21,13 +21,17 @@ const (
 	defaultPort           = 8080
 	minTokenLength        = 16
 	placeholderToken      = "your_generated_token_here"
+	defaultMaxRestarts    = 5
+	defaultInitialBackoff = 5 * time.Second
+	minInitialBackoff     = 1 * time.Second
 )
 
 // Config contains the application configuration.
 type Config struct {
-	API       APIConfig       `toml:"api"`
-	Minecraft MinecraftConfig `toml:"minecraft"`
-	Options   Options         `toml:"options"`
+	API         APIConfig         `toml:"api"`
+	Minecraft   MinecraftConfig   `toml:"minecraft"`
+	AutoRestart AutoRestartConfig `toml:"auto_restart"`
+	Options     Options           `toml:"options"`
 }
 
 type APIConfig struct {
@@ -47,6 +51,12 @@ type MinecraftConfig struct {
 	StopTimeout    time.Duration `toml:"stop_timeout"`
 	StartupTimeout time.Duration `toml:"startup_timeout"`
 	Autostart      bool          `toml:"autostart"`
+}
+
+type AutoRestartConfig struct {
+	Enabled        bool          `toml:"enabled"`
+	MaxRestarts    int           `toml:"max_restarts"`
+	InitialBackoff time.Duration `toml:"initial_backoff"`
 }
 
 // Options contains application-level options.
@@ -81,6 +91,13 @@ func loadConfig(path string) (Config, error) {
 	}
 	if conf.Minecraft.StartupTimeout == 0 {
 		conf.Minecraft.StartupTimeout = defaultStartupTimeout
+	}
+
+	if conf.AutoRestart.MaxRestarts == 0 {
+		conf.AutoRestart.MaxRestarts = defaultMaxRestarts
+	}
+	if conf.AutoRestart.InitialBackoff == 0 {
+		conf.AutoRestart.InitialBackoff = defaultInitialBackoff
 	}
 
 	err = conf.validate()
@@ -134,6 +151,13 @@ func (c *Config) validate() error {
 		case len(c.API.Token) < minTokenLength:
 			problems = append(problems, fmt.Sprintf("api.token must be at least %d characters", minTokenLength))
 		}
+	}
+
+	if c.AutoRestart.MaxRestarts < 1 {
+		problems = append(problems, "auto_restart.max_restarts must be at least 1")
+	}
+	if c.AutoRestart.InitialBackoff < minInitialBackoff {
+		problems = append(problems, "auto_restart.initial_backoff must be at least 1 second")
 	}
 
 	if len(problems) > 0 {
