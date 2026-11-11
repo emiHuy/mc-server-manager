@@ -40,6 +40,7 @@ Copy `config/config.example.toml` to `config/config.toml` and edit it.
 |---|---|
 | `minecraft.*` | Server directory, jar, and memory settings. |
 | `minecraft.autostart` | Start the server when the manager starts. |
+| `auto_restart.*` | Restart the server after a crash. Off by default. |
 | `api.host`, `api.port` | Default `127.0.0.1:8080`. Use `0.0.0.0` to allow other machines. |
 | `api.token` | Optional, at least 16 characters. You can generate one with `./mc-server-manager token`. |
 
