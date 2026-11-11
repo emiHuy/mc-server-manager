@@ -69,6 +69,7 @@ type Instance struct {
 	stdin        io.WriteCloser
 	exited       chan struct{}
 	startupTimer *time.Timer
+	onCrash      func(ranFor time.Duration)
 
 	restartMu sync.Mutex // serialize Restart calls
 }
@@ -468,6 +469,12 @@ func (inst *Instance) SubscribeMetrics() ([]Metrics, *fanout.Subscription[Metric
 	return latest, sub
 }
 
+func (inst *Instance) SetOnCrash(f func(ranFor time.Duration)) {
+	inst.mu.Lock()
+	inst.onCrash = f
+	inst.mu.Unlock()
+}
+
 // preflight checks if the specified server address is available for use.
 func (inst *Instance) preflight() error {
 	host, port, err := serverAddrFromProperties(inst.conf.Directory)
@@ -527,13 +534,20 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 	stopRequested := inst.state == StateStopping
 	wasStarting := inst.state == StateStarting
 
+	var ranFor time.Duration
+	if !inst.startedAt.IsZero() {
+		ranFor = time.Since(inst.startedAt)
+	}
+
 	inst.players.clear()
 
 	// A requested stop is always a stop.
 	// Otherwise a clean exit counts as one only after the server was ready
+	crashed := false
 	if stopRequested || (err == nil && !wasStarting) {
 		inst.setStateLocked(StateStopped)
 	} else {
+		crashed = true
 		inst.setStateLocked(StateCrashed)
 	}
 
@@ -544,6 +558,8 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 		inst.exited = nil
 		inst.removePidfile()
 	}
+
+	hook := inst.onCrash
 	inst.mu.Unlock()
 
 	switch {
@@ -555,6 +571,10 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 		slog.Info("minecraft server exited on its own", "state", StateStopped)
 	default:
 		slog.Error("minecraft server crashed", "state", StateCrashed, "error", err)
+	}
+
+	if crashed && hook != nil {
+		hook(ranFor)
 	}
 }
 
