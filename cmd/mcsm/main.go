@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,14 +30,15 @@ const (
 const usageText = `usage: mcsm [--addr URL] [--token TOKEN] <command>
 
 commands:
-	status               state, uptime, and plaers
-	metrics              CPU, memory, and disk usage
-	players              list online players
-	start [--wait]       start the server (--wait blocks until it is running)
-	stop                 stop gracefully (blocks until server has exited)
-	kill                 kill immediately, without a world save
-	command <text...>    send a console command
-	logs [-n N] [-f]     recent console lines; -f follows live output
+	status                   state, uptime, players, auto-restart
+	metrics                  CPU, memory, and disk usage
+	players                  list online players
+	start [--wait]           start the server (--wait blocks until it is running)
+	stop                     stop gracefully (blocks until server has exited)
+	kill                     kill immediately, without a world save
+	command <text...>        send a console command
+	logs [-n N] [-f]         recent console lines; -f follows live output
+	auto-restart true|false  restart automatically after a crash (until the manager restarts)
 
 environment:
 	MCSM_ADDR            manager address (default ` + defaultAddr + `)
@@ -129,6 +131,8 @@ func run(ctx context.Context, c *client, cmd string, args []string) error {
 		return c.command(ctx, strings.Join(args, " "))
 	case "logs":
 		return c.logs(ctx, args)
+	case "auto-restart":
+		return c.autoRestart(ctx, args)
 	case "help":
 		usage()
 		return nil
@@ -204,6 +208,7 @@ func (c *client) status(ctx context.Context) error {
 	} else {
 		fmt.Printf("Players: %d (%s)\n", len(s.Players), strings.Join(s.Players, ", "))
 	}
+	fmt.Printf("Restart: %s\n", autoRestartSummary(s.AutoRestart))
 	return nil
 }
 
@@ -369,6 +374,44 @@ func (c *client) logs(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+func (c *client) autoRestart(ctx context.Context, args []string) error {
+	if len(args) != 1 {
+		return usageError("auto-restart needs true or false")
+	}
+	enabled, err := strconv.ParseBool(args[0])
+	if err != nil {
+		return usageError("auto-restart needs true or false, got " + args[0])
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	body := apitypes.AutoRestartRequest{Enabled: &enabled}
+
+	var res apitypes.AutoRestartResponse
+	if err := c.do(ctx, http.MethodPost, "/api/server/auto-restart", body, &res); err != nil {
+		return err
+	}
+	fmt.Println("auto-restart:", autoRestartSummary(res))
+	return nil
+}
+
+func autoRestartSummary(a apitypes.AutoRestartResponse) string {
+	switch {
+	case !a.Enabled:
+		return "disabled"
+	case a.GaveUp:
+		return fmt.Sprintf("gave up after %d restarts", a.Restarts)
+	case a.NextRetryAt != nil:
+		wait := max(time.Until(*a.NextRetryAt), 0).Round(time.Second)
+		return fmt.Sprintf("retrying in %s (attempt %d of %d)", wait, a.Restarts, a.MaxRestarts)
+	case a.Restarts > 0:
+		return fmt.Sprintf("enabled (%d of %d restarts used)", a.Restarts, a.MaxRestarts)
+	default:
+		return "enabled"
+	}
 }
 
 func seconds(s int64) string {
