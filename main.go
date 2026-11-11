@@ -37,6 +37,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	restarter := minecraft.NewRestarter(
+		instance,
+		conf.AutoRestart.Enabled,
+		conf.AutoRestart.MaxRestarts,
+		conf.AutoRestart.InitialBackoff,
+	)
+
 	server := api.New(instance, conf.API)
 	slog.Info("starting api server")
 
@@ -60,5 +67,5 @@ func main() {
 		slog.Error("api server failed", "error", err)
 	}
 
-	shutdown(instance, server, sig)
+	shutdown(instance, restarter, server, sig)
 }

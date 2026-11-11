@@ -44,7 +44,9 @@ func stopMinecraft(instance stopper, sig <-chan os.Signal) {
 	}
 }
 
-func shutdown(instance *minecraft.Instance, server *api.Server, sig <-chan os.Signal) {
+func shutdown(instance *minecraft.Instance, restarter *minecraft.Restarter, server *api.Server, sig <-chan os.Signal) {
+	restarter.Disable()
+
 	select {
 	case <-instance.Done(): // nothing is running
 	default:
