@@ -198,6 +198,37 @@ func TestValidate(t *testing.T) {
 			name:   "initial_backoff at minimum is valid",
 			mutate: func(c *Config) { c.AutoRestart.InitialBackoff = minInitialBackoff },
 		},
+		{
+			name:   "loopback host, no token",
+			mutate: func(c *Config) { c.API.Host = "127.0.0.1"; c.API.Token = "" },
+		},
+		{
+			name:   "localhost, no token",
+			mutate: func(c *Config) { c.API.Host = "localhost"; c.API.Token = "" },
+		},
+		{
+			name:   "ipv6 loopback, no token",
+			mutate: func(c *Config) { c.API.Host = "::1"; c.API.Token = "" },
+		},
+		{
+			name:   "all interfaces, no token",
+			mutate: func(c *Config) { c.API.Host = "0.0.0.0"; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "lan address, no token",
+			mutate: func(c *Config) { c.API.Host = "192.168.1.20"; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "hostname, no token",
+			mutate: func(c *Config) { c.API.Host = "mc.example.com"; c.API.Token = "" },
+			want:   []string{"api.token"},
+		},
+		{
+			name:   "all interfaces, with token",
+			mutate: func(c *Config) { c.API.Host = "0.0.0.0"; c.API.Token = strings.Repeat("a", minTokenLength) },
+		},
 	}
 
 	for _, tt := range tests {
@@ -502,6 +533,36 @@ func TestInitLoggerLevels(t *testing.T) {
 				if got := logger.Enabled(ctx, check.level); got != check.want {
 					t.Errorf("level %q: Enabled(%v) = %v, want %v", tt.level, check.level, got, check.want)
 				}
+			}
+		})
+	}
+}
+
+func TestAPIConfigIsLoopback(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{"empty defaults to loopback", "", true},
+		{"localhost", "localhost", true},
+		{"localhost any case", "LOCALHOST", true},
+		{"ipv4 loopback", "127.0.0.1", true},
+		{"other 127 address", "127.0.0.5", true},
+		{"ipv6 loopback", "::1", true},
+		{"bracketed ipv6 loopback", "[::1]", true},
+		{"all ipv4 interfaces", "0.0.0.0", false},
+		{"all ipv6 interfaces", "::", false},
+		{"lan address", "192.168.1.20", false},
+		{"tailscale placeholder", "tailscale", false},
+		{"hostname", "example.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isLoopbackHost(tt.host)
+			if got != tt.want {
+				t.Errorf("APIConfig{Host: %q}.IsLoopback() = %v, want %v", tt.host, got, tt.want)
 			}
 		})
 	}
