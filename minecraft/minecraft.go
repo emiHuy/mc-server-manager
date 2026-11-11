@@ -39,6 +39,8 @@ const (
 
 	pidfileName         = "mcsm.pid"
 	staleStartTolerance = 5 * time.Second
+
+	maxCommandLength = 1000 // bytes
 )
 
 // Instance manages one Minecraft server process.
@@ -374,11 +376,9 @@ func (inst *Instance) Done() <-chan struct{} {
 
 // Send writes a console command to the server.
 func (inst *Instance) Send(command string) error {
-	trimmedCommand := strings.TrimSpace(command)
-	if trimmedCommand == "" {
-		return fmt.Errorf("cannot send command: %w: empty command", ErrInvalidCommand)
-	} else if strings.ContainsFunc(trimmedCommand, unicode.IsControl) {
-		return fmt.Errorf("cannot send command: %w: contains control character", ErrInvalidCommand)
+	cmd, err := normalizeCommand(command)
+	if err != nil {
+		return fmt.Errorf("cannot send command: %w", err)
 	}
 
 	inst.mu.Lock()
@@ -389,7 +389,7 @@ func (inst *Instance) Send(command string) error {
 	if !state.live() {
 		return fmt.Errorf("cannot send command: %w: %s", ErrInvalidState, state)
 	}
-	return inst.writeCommand(stdin, trimmedCommand)
+	return inst.writeCommand(stdin, cmd)
 }
 
 // RecentConsole return the n most recent console lines.
@@ -753,4 +753,20 @@ func (inst *Instance) sampleLoop() {
 		}
 		inst.samplerMu.Unlock()
 	}
+}
+
+// normalizeCommand trims the command, strips one leading "/" and validates the result.
+func normalizeCommand(command string) (string, error) {
+	cmd := strings.TrimSpace(command)
+	cmd = strings.TrimSpace(strings.TrimPrefix(cmd, "/"))
+
+	switch {
+	case cmd == "":
+		return "", fmt.Errorf("%w: empty command", ErrInvalidCommand)
+	case len(cmd) > maxCommandLength:
+		return "", fmt.Errorf("%w: command longer than %d bytes", ErrInvalidCommand, maxCommandLength)
+	case strings.ContainsFunc(cmd, unicode.IsControl):
+		return "", fmt.Errorf("%w: contains control character", ErrInvalidCommand)
+	}
+	return cmd, nil
 }
