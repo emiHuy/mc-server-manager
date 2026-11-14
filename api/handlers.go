@@ -228,3 +228,35 @@ func linesParam(r *http.Request, min int) (int, error) {
 	}
 	return n, nil
 }
+
+func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
+	info, err := s.backups.Create(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	slog.Info("backup created", "id", info.ID, "remote", r.RemoteAddr)
+	writeJSON(w, http.StatusCreated, newBackupResponse(info))
+}
+
+func (s *Server) handleBackupList(w http.ResponseWriter, r *http.Request) {
+	infos, err := s.backups.List()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, newBackupListResponse(infos))
+}
+
+func (s *Server) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.backups.Delete(id); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	slog.Info("backup deleted", "id", id, "remote", r.RemoteAddr)
+	w.WriteHeader(http.StatusNoContent)
+}

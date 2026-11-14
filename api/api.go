@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/emiHuy/mc-server-manager/backup"
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
@@ -24,17 +26,30 @@ var docsFiles embed.FS
 //go:embed static
 var webFiles embed.FS
 
+type backupService interface {
+	Create(ctx context.Context) (backup.Info, error)
+	List() ([]backup.Info, error)
+	Delete(id string) error
+}
+
 type Server struct {
 	httpServer *http.Server
 	instance   *minecraft.Instance
 	restarter  *minecraft.Restarter
+	backups    backupService
 	token      string
 }
 
-func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecraft.Restarter) *Server {
+type methodHandler struct {
+	method  string
+	handler http.HandlerFunc
+}
+
+func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecraft.Restarter, backups backupService) *Server {
 	s := Server{
 		instance:  instance,
 		restarter: restarter,
+		backups:   backups,
 		token:     conf.Token,
 	}
 
@@ -79,6 +94,11 @@ func (s *Server) routes() *http.ServeMux {
 	handle(mux, http.MethodGet, "/api/server/events", s.handleServerEvents)
 	handle(mux, http.MethodGet, "/api/server/console/stream", s.handleServerConsoleStream)
 	handle(mux, http.MethodGet, "/api/server/metrics/stream", s.handleServerMetricsStream)
+	handleMethods(mux, "/api/backups",
+		methodHandler{http.MethodGet, s.handleBackupList},
+		methodHandler{http.MethodPost, s.handleBackupCreate},
+	)
+	handle(mux, http.MethodDelete, "/api/backups/{id}", s.handleBackupDelete)
 
 	docsSite, err := fs.Sub(docsFiles, "docs")
 	if err != nil {
@@ -107,6 +127,22 @@ func handle(mux *http.ServeMux, method, path string, handler http.HandlerFunc) {
 	mux.HandleFunc(method+" "+path, handler)
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", method)
+		writeError(w, r, errMethodNotAllowed)
+	})
+}
+
+// handleMethods registers several methods on one path. Any other method gets a
+// JSON 405 whose Allow header lists every method the path supports.
+func handleMethods(mux *http.ServeMux, path string, handlers ...methodHandler) {
+	methods := make([]string, 0, len(handlers))
+	for _, h := range handlers {
+		mux.HandleFunc(h.method+" "+path, h.handler)
+		methods = append(methods, h.method)
+	}
+
+	allow := strings.Join(methods, ", ")
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", allow)
 		writeError(w, r, errMethodNotAllowed)
 	})
 }
