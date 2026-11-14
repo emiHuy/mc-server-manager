@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -25,6 +26,7 @@ const (
 	stopTimeout    = 2 * time.Minute
 	startTimeout   = 5 * time.Minute
 	restartTimeout = stopTimeout + 10*time.Second
+	backupTimeout  = 10 * time.Minute
 )
 
 const usageText = `usage: mcsm [--addr URL] [--token TOKEN] <command>
@@ -39,6 +41,9 @@ commands:
 	command <text...>        send a console command
 	logs [-n N] [-f]         recent console lines; -f follows live output
 	auto-restart true|false  restart automatically after a crash (until the manager restarts)
+	backup create            back up the world (waits until it finishes)
+	backup list              list backups, newest first
+	backup delete <id>       delete a backup
 
 environment:
 	MCSM_ADDR            manager address (default ` + defaultAddr + `)
@@ -133,6 +138,8 @@ func run(ctx context.Context, c *client, cmd string, args []string) error {
 		return c.logs(ctx, args)
 	case "auto-restart":
 		return c.autoRestart(ctx, args)
+	case "backup":
+		return c.backup(ctx, args)
 	case "help":
 		usage()
 		return nil
@@ -429,4 +436,66 @@ func humanBytes(b uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func (c *client) backup(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return usageError("backup needs create, list, or delete")
+	}
+
+	switch args[0] {
+	case "create":
+		return c.backupCreate(ctx)
+	case "list":
+		return c.backupList(ctx)
+	case "delete":
+		if len(args) != 2 {
+			return usageError("backup delete needs one backup id")
+		}
+		return c.backupDelete(ctx, args[1])
+	default:
+		return usageError("unknown backup command " + args[0])
+	}
+}
+
+func (c *client) backupCreate(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, backupTimeout)
+	defer cancel()
+
+	var b apitypes.BackupResponse
+	if err := c.do(ctx, http.MethodPost, "/api/backups", nil, &b); err != nil {
+		return err
+	}
+	fmt.Printf("%s (%s)\n", b.ID, humanBytes(uint64(b.SizeBytes)))
+	return nil
+}
+
+func (c *client) backupList(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	var out apitypes.BackupListResponse
+	if err := c.do(ctx, http.MethodGet, "/api/backups", nil, &out); err != nil {
+		return err
+	}
+	if len(out.Backups) == 0 {
+		fmt.Println("no backups")
+		return nil
+	}
+	for _, b := range out.Backups {
+		fmt.Printf("%s  %s  %s\n", b.ID, b.CreatedAt.Local().Format("2006-01-02 15:04"), humanBytes(uint64(b.SizeBytes)))
+	}
+	return nil
+}
+
+func (c *client) backupDelete(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	// PathEscape keeps a hostile id like "../x" inside one path segment; the server rejects it.
+	if err := c.do(ctx, http.MethodDelete, "/api/backups/"+url.PathEscape(id), nil, nil); err != nil {
+		return err
+	}
+	fmt.Println("deleted", id)
+	return nil
 }
