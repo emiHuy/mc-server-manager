@@ -69,10 +69,10 @@ type AutoRestartConfig struct {
 }
 
 type BackupConfig struct {
-	Directory     string        `toml:"directory"`
-	Keep          int           `toml:"keep"`
-	FoldersToSave []string      `toml:"folders_to_save"`
-	FlushTimeout  time.Duration `toml:"flush_timeout"`
+	Directory    string        `toml:"directory"`
+	Keep         int           `toml:"keep"`
+	World        string        `toml:"world"`
+	FlushTimeout time.Duration `toml:"flush_timeout"`
 }
 
 // Options contains application-level options.
@@ -122,8 +122,8 @@ func loadConfig(path string) (Config, error) {
 	if conf.Backup.Keep == 0 {
 		conf.Backup.Keep = defaultBackupKeep
 	}
-	if len(conf.Backup.FoldersToSave) == 0 {
-		conf.Backup.FoldersToSave = []string{defaultBackupWorld}
+	if conf.Backup.World == "" {
+		conf.Backup.World = defaultBackupWorld
 	}
 	if conf.Backup.FlushTimeout == 0 {
 		conf.Backup.FlushTimeout = defaultBackupFlushTimeout
@@ -197,10 +197,6 @@ func (c *Config) validate() error {
 
 	b := c.Backup
 
-	if len(b.FoldersToSave) == 0 {
-		problems = append(problems, "backup.folders_to_save must not be empty")
-	}
-
 	switch {
 	case b.Directory == "":
 		problems = append(problems, "backup.directory must not be empty")
@@ -212,18 +208,16 @@ func (c *Config) validate() error {
 		problems = append(problems, fmt.Sprintf("backup.flush_timeout must be at least %s", minFlushTimeout))
 	}
 
-	for _, f := range b.FoldersToSave {
-		switch {
-		case f == "":
-			problems = append(problems, "folder must not be empty")
-		case f == "." || f == ".." || f != filepath.Base(f):
-			problems = append(problems, "folder must be a plain folder name, not a path")
-		}
+	if b.World == "" {
+		problems = append(problems, "backup.world must not be empty")
+	}
+	if b.World == "." || b.World == ".." || b.World != filepath.Base(b.World) {
+		problems = append(problems, "backup.world must be a plain folder name, not a path")
+	}
 
-		world := filepath.Join(c.Minecraft.Directory, f)
-		if within(world, b.Directory) {
-			problems = append(problems, "backup.directory must not be inside the folder")
-		}
+	world := filepath.Join(c.Minecraft.Directory, b.World)
+	if within(world, b.Directory) {
+		problems = append(problems, "backup.directory must not be inside the folder")
 	}
 
 	if len(problems) > 0 {

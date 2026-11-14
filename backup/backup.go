@@ -166,7 +166,7 @@ func (m *Manager) archive(id string) (Info, error) {
 		return Info{}, fmt.Errorf("backup %s already exists", id) // same-second collision
 	}
 
-	if err := writeZip(tmp, m.sourceDir, m.conf.FoldersToSave); err != nil {
+	if err := writeZip(tmp, m.sourceDir, m.conf.World); err != nil {
 		os.Remove(tmp)
 		return Info{}, err
 	}

@@ -331,10 +331,10 @@ func newCreateManager(t *testing.T, ctl Controller, sourceDir string, keep int) 
 	t.Helper()
 
 	return New(ctl, sourceDir, config.BackupConfig{
-		Directory:     filepath.Join(t.TempDir(), "backups"),
-		Keep:          keep,
-		FoldersToSave: []string{"world"},
-		FlushTimeout:  2 * time.Second,
+		Directory:    filepath.Join(t.TempDir(), "backups"),
+		Keep:         keep,
+		World:        "world",
+		FlushTimeout: 2 * time.Second,
 	})
 }
 

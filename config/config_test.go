@@ -37,10 +37,10 @@ func validConfig() Config {
 			InitialBackoff: defaultInitialBackoff,
 		},
 		Backup: BackupConfig{
-			Directory:     defaultBackupDirectory,
-			Keep:          defaultBackupKeep,
-			FoldersToSave: []string{defaultBackupWorld},
-			FlushTimeout:  defaultBackupFlushTimeout,
+			Directory:    defaultBackupDirectory,
+			Keep:         defaultBackupKeep,
+			World:        defaultBackupWorld,
+			FlushTimeout: defaultBackupFlushTimeout,
 		},
 	}
 }
@@ -650,33 +650,33 @@ func TestValidateBackup(t *testing.T) {
 		},
 		{
 			name:    "empty world",
-			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{} },
-			wantErr: "backup.folders_to_save must not be empty",
+			mutate:  func(c *Config) { c.Backup.World = "" },
+			wantErr: "backup.world must not be empty",
 		},
 		{
 			name:    "world is dot",
-			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{"."} },
+			mutate:  func(c *Config) { c.Backup.World = "." },
 			wantErr: "plain folder name",
 		},
 		{
 			name:    "world is dot dot",
-			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{".."} },
+			mutate:  func(c *Config) { c.Backup.World = ".." },
 			wantErr: "plain folder name",
 		},
 		{
 			name:    "world escapes the server folder",
-			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{filepath.Join("..", "other")} },
+			mutate:  func(c *Config) { c.Backup.World = filepath.Join("..", "other") },
 			wantErr: "plain folder name",
 		},
 		{
 			name:    "world has a subfolder",
-			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{filepath.Join("worlds", "main")} },
+			mutate:  func(c *Config) { c.Backup.World = filepath.Join("worlds", "main") },
 			wantErr: "plain folder name",
 		},
 		{
 			name: "world is an absolute path",
 			mutate: func(c *Config) {
-				c.Backup.FoldersToSave = []string{filepath.Join(c.Minecraft.Directory, "world")}
+				c.Backup.World = filepath.Join(c.Minecraft.Directory, "world")
 			},
 			wantErr: "plain folder name",
 		},
