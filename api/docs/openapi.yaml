@@ -230,6 +230,52 @@ paths:
               schema: { $ref: "#/components/schemas/Metrics" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/backups:
+    post:
+      tags: [Backups]
+      summary: Create a backup of the world
+      description: >
+        If the server is running, the world is flushed to disk and autosaving
+        is paused while the archive is written. Blocks until the backup is
+        finished. Only one backup can run at a time.
+      responses:
+        "201":
+          description: Backup created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Backup" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    get:
+      tags: [Backups]
+      summary: List backups, newest first
+      responses:
+        "200":
+          description: Backups
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/backups/{id}:
+    delete:
+      tags: [Backups]
+      summary: Delete a backup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Backup ID, such as backup-20261112-153000
+          schema: { type: string, pattern: '^backup-\d{8}-\d{6}$' }
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -261,6 +307,11 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     InternalError:
       description: Unexpected failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No such backup
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -318,9 +369,13 @@ components:
             - player_joined
             - player_left
             - player_chat
+            - backup_started
+            - backup_completed
+            - backup_failed
         timestamp: { type: string, format: date-time }
         player: { type: string, description: Present for player events }
         message: { type: string, description: Present for chat, warning, and error events }
+        backup: { type: string, description: Backup ID, present for backup events }
         state:
           $ref: "#/components/schemas/State"
 
@@ -372,3 +427,17 @@ components:
       required: [enabled]
       properties:
         enabled: { type: boolean, example: true }
+
+    Backup:
+      type: object
+      properties:
+        id: { type: string }
+        created_at: { type: string, format: date-time }
+        size_bytes: { type: integer, format: int64 }
+
+    BackupList:
+      type: object
+      properties:
+        backups:
+          type: array
+          items: { $ref: "#/components/schemas/Backup" }

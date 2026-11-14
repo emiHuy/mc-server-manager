@@ -36,6 +36,12 @@ func validConfig() Config {
 			MaxRestarts:    defaultMaxRestarts,
 			InitialBackoff: defaultInitialBackoff,
 		},
+		Backup: BackupConfig{
+			Directory:     defaultBackupDirectory,
+			Keep:          defaultBackupKeep,
+			FoldersToSave: []string{defaultBackupWorld},
+			FlushTimeout:  defaultBackupFlushTimeout,
+		},
 	}
 }
 
@@ -594,6 +600,179 @@ func TestAPIConfigIsLoopback(t *testing.T) {
 			got := isLoopbackHost(tt.host)
 			if got != tt.want {
 				t.Errorf("APIConfig{Host: %q}.IsLoopback() = %v, want %v", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateBackup(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(c *Config)
+		wantErr string // substring; empty means the config must be valid
+	}{
+		{
+			name:   "valid",
+			mutate: func(c *Config) {},
+		},
+		{
+			name:    "empty directory",
+			mutate:  func(c *Config) { c.Backup.Directory = "" },
+			wantErr: "backup.directory",
+		},
+		{
+			name:    "keep zero",
+			mutate:  func(c *Config) { c.Backup.Keep = 0 },
+			wantErr: "backup.keep",
+		},
+		{
+			name:    "keep negative",
+			mutate:  func(c *Config) { c.Backup.Keep = -1 },
+			wantErr: "backup.keep",
+		},
+		{
+			name:   "keep one is allowed",
+			mutate: func(c *Config) { c.Backup.Keep = 1 },
+		},
+		{
+			name:    "flush timeout too short",
+			mutate:  func(c *Config) { c.Backup.FlushTimeout = time.Second },
+			wantErr: "backup.flush_timeout",
+		},
+		{
+			name:    "flush timeout zero",
+			mutate:  func(c *Config) { c.Backup.FlushTimeout = 0 },
+			wantErr: "backup.flush_timeout",
+		},
+		{
+			name:   "flush timeout at the minimum",
+			mutate: func(c *Config) { c.Backup.FlushTimeout = minFlushTimeout },
+		},
+		{
+			name:    "empty world",
+			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{} },
+			wantErr: "backup.folders_to_save must not be empty",
+		},
+		{
+			name:    "world is dot",
+			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{"."} },
+			wantErr: "plain folder name",
+		},
+		{
+			name:    "world is dot dot",
+			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{".."} },
+			wantErr: "plain folder name",
+		},
+		{
+			name:    "world escapes the server folder",
+			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{filepath.Join("..", "other")} },
+			wantErr: "plain folder name",
+		},
+		{
+			name:    "world has a subfolder",
+			mutate:  func(c *Config) { c.Backup.FoldersToSave = []string{filepath.Join("worlds", "main")} },
+			wantErr: "plain folder name",
+		},
+		{
+			name: "world is an absolute path",
+			mutate: func(c *Config) {
+				c.Backup.FoldersToSave = []string{filepath.Join(c.Minecraft.Directory, "world")}
+			},
+			wantErr: "plain folder name",
+		},
+		{
+			name: "backup directory inside the world folder",
+			mutate: func(c *Config) {
+				c.Backup.Directory = filepath.Join(c.Minecraft.Directory, "world", "backups")
+			},
+			wantErr: "inside the folder",
+		},
+		{
+			name: "backup directory is the world folder",
+			mutate: func(c *Config) {
+				c.Backup.Directory = filepath.Join(c.Minecraft.Directory, "world")
+			},
+			wantErr: "inside the folder",
+		},
+		{
+			// "world_backups" starts with "world" but is a different folder.
+			name: "backup directory next to the world folder with a similar name",
+			mutate: func(c *Config) {
+				c.Backup.Directory = filepath.Join(c.Minecraft.Directory, "world_backups")
+			},
+		},
+		{
+			name: "backup directory in the server folder but outside the world",
+			mutate: func(c *Config) {
+				c.Backup.Directory = filepath.Join(c.Minecraft.Directory, "backups")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig()
+			tt.mutate(&c)
+
+			err := c.validate()
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validate() = nil, want an error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validate() = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateReportsAllBackupProblems(t *testing.T) {
+	c := validConfig()
+	c.Backup.Directory = ""
+	c.Backup.Keep = 0
+
+	err := c.validate()
+	if err == nil {
+		t.Fatal("validate() = nil, want an error")
+	}
+	for _, want := range []string{"backup.directory", "backup.keep"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q is missing %q", err, want)
+		}
+	}
+}
+
+func TestWithin(t *testing.T) {
+	root := t.TempDir()
+	world := filepath.Join(root, "world")
+
+	tests := []struct {
+		name   string
+		parent string
+		child  string
+		want   bool
+	}{
+		{"same path", world, world, true},
+		{"child", world, filepath.Join(world, "backups"), true},
+		{"deep child", world, filepath.Join(world, "a", "b", "c"), true},
+		{"unclean child path", world, filepath.Join(world, "a", "..", "backups"), true},
+		{"sibling with a shared prefix", world, filepath.Join(root, "world_backups"), false},
+		{"sibling", world, filepath.Join(root, "backups"), false},
+		{"parent of parent", world, root, false},
+		{"escapes with dot dot", world, filepath.Join(world, "..", "backups"), false},
+		{"unrelated", world, filepath.Join(t.TempDir(), "x"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := within(tt.parent, tt.child); got != tt.want {
+				t.Fatalf("within(%q, %q) = %v, want %v", tt.parent, tt.child, got, tt.want)
 			}
 		})
 	}

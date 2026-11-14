@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/api"
+	"github.com/emiHuy/mc-server-manager/backup"
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
@@ -57,7 +58,9 @@ func main() {
 		conf.AutoRestart.InitialBackoff,
 	)
 
-	server := api.New(conf.API, instance, restarter)
+	backups := backup.New(instance, conf.Minecraft.Directory, conf.Backup)
+
+	server := api.New(conf.API, instance, restarter, backups)
 	slog.Info("starting api server")
 
 	apiErr := make(chan error, 1)

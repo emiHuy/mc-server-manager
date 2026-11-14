@@ -1,4 +1,7 @@
 config.toml
-mcsm.pid
+
 mc-server-manager.exe
 mcsm.exe
+
+backups/
+mcsm.pid

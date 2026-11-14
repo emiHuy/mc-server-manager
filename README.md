@@ -12,6 +12,7 @@ A lightweight manager for a self-hosted Minecraft server. Runs on the host machi
 - CPU, memory, and disk metrics
 - Web dashboard, CLI (`mcsm`), and API
 - Automatic restart after crashes
+- Manual backups with retention (scheduled backups are planned)
 - Bearer-token authentication (required when listening beyond localhost)
 
 ## Requirements
@@ -44,6 +45,7 @@ Copy `config/config.example.toml` to `config/config.toml` and edit it.
 | `auto_restart.*` | Restart the server after a crash. Off by default. |
 | `api.host`, `api.port` | Default `127.0.0.1:8080`. Set api.host = "tailscale" to automatically bind to your Tailscale IP, or 0.0.0.0 for all interfaces. |
 | `api.token` |  At least 16 characters. Required unless `api.host` is a loopback address. You can generate one with `./mc-server-manager token`. |
+| `backup.*` | Backup creation and storage. |
 
 ## CLI
 
@@ -76,6 +78,8 @@ With `auto_restart` enabled, a crashed server is restarted after a delay that do
 - The API is plain HTTP, so the token is visible to anyone sniffing the network. Only expose it on a network you trust, such as a VPN.
 - A slow stream client can miss messages. Re-fetch `/api/server/status` after reconnecting.
 - Readiness detection expects vanilla's "Done" line.
+- A backup waits for vanilla's "Saved the game" line. If it never appears, the backup fails after `backup.flush_timeout` and autosaving is turned back on.
+- Backups live on the same machine, and on the same disk unless `backup.directory` points elsewhere, so copy them off the machine if you want protection from disk failure.
 
 ## Development
 
@@ -88,5 +92,6 @@ go vet ./...
 
 - Scheduled backups
 - Scheduled online/offline hours
+- Optional TLS
 - Server properties + config editor
 - ESP32 server monitoring

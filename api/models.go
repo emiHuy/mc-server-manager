@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/emiHuy/mc-server-manager/backup"
 	"github.com/emiHuy/mc-server-manager/internal/apitypes"
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
@@ -29,6 +30,7 @@ func newEventResponse(e minecraft.Event) apitypes.EventResponse {
 		Type:      e.Type.String(),
 		Timestamp: e.Timestamp,
 		Player:    e.Player,
+		Backup:    e.Backup,
 		Message:   e.Message,
 	}
 	if e.Type == minecraft.EventStateChanged {
@@ -53,6 +55,18 @@ func newAutoRestartResponse(s minecraft.RestarterSnapshot) apitypes.AutoRestartR
 		resp.NextRetryAt = &t
 	}
 	return resp
+}
+
+func newBackupResponse(info backup.Info) apitypes.BackupResponse {
+	return apitypes.BackupResponse{ID: info.ID, CreatedAt: info.CreatedAt, SizeBytes: info.SizeBytes}
+}
+
+func newBackupListResponse(infos []backup.Info) apitypes.BackupListResponse {
+	backups := make([]apitypes.BackupResponse, 0, len(infos)) // [] and never null, like players
+	for _, info := range infos {
+		backups = append(backups, newBackupResponse(info))
+	}
+	return apitypes.BackupListResponse{Backups: backups}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

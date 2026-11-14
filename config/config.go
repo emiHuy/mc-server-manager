@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,18 +15,23 @@ import (
 )
 
 const (
-	minStopTimeout        = time.Second
-	defaultStopTimeout    = 30 * time.Second
-	minStartupTimeout     = 5 * time.Second
-	defaultStartupTimeout = 2 * time.Minute
-	defaultHost           = "127.0.0.1"
-	defaultPort           = 8080
-	minTokenLength        = 16
-	placeholderToken      = "your_generated_token_here"
-	defaultMaxRestarts    = 5
-	defaultInitialBackoff = 5 * time.Second
-	minInitialBackoff     = 1 * time.Second
-	TailscaleHost         = "tailscale"
+	minStopTimeout            = time.Second
+	defaultStopTimeout        = 30 * time.Second
+	minStartupTimeout         = 5 * time.Second
+	defaultStartupTimeout     = 2 * time.Minute
+	defaultHost               = "127.0.0.1"
+	defaultPort               = 8080
+	minTokenLength            = 16
+	placeholderToken          = "your_generated_token_here"
+	defaultMaxRestarts        = 5
+	defaultInitialBackoff     = 5 * time.Second
+	minInitialBackoff         = 1 * time.Second
+	TailscaleHost             = "tailscale"
+	minFlushTimeout           = 5 * time.Second
+	defaultBackupDirectory    = "backups"
+	defaultBackupKeep         = 7
+	defaultBackupWorld        = "world"
+	defaultBackupFlushTimeout = 30 * time.Second
 )
 
 // Config contains the application configuration.
@@ -33,6 +39,7 @@ type Config struct {
 	API         APIConfig         `toml:"api"`
 	Minecraft   MinecraftConfig   `toml:"minecraft"`
 	AutoRestart AutoRestartConfig `toml:"auto_restart"`
+	Backup      BackupConfig      `toml:"backup"`
 	Options     Options           `toml:"options"`
 }
 
@@ -59,6 +66,13 @@ type AutoRestartConfig struct {
 	Enabled        bool          `toml:"enabled"`
 	MaxRestarts    int           `toml:"max_restarts"`
 	InitialBackoff time.Duration `toml:"initial_backoff"`
+}
+
+type BackupConfig struct {
+	Directory     string        `toml:"directory"`
+	Keep          int           `toml:"keep"`
+	FoldersToSave []string      `toml:"folders_to_save"`
+	FlushTimeout  time.Duration `toml:"flush_timeout"`
 }
 
 // Options contains application-level options.
@@ -100,6 +114,19 @@ func loadConfig(path string) (Config, error) {
 	}
 	if conf.AutoRestart.InitialBackoff == 0 {
 		conf.AutoRestart.InitialBackoff = defaultInitialBackoff
+	}
+
+	if conf.Backup.Directory == "" {
+		conf.Backup.Directory = defaultBackupDirectory
+	}
+	if conf.Backup.Keep == 0 {
+		conf.Backup.Keep = defaultBackupKeep
+	}
+	if len(conf.Backup.FoldersToSave) == 0 {
+		conf.Backup.FoldersToSave = []string{defaultBackupWorld}
+	}
+	if conf.Backup.FlushTimeout == 0 {
+		conf.Backup.FlushTimeout = defaultBackupFlushTimeout
 	}
 
 	err = conf.validate()
@@ -168,6 +195,37 @@ func (c *Config) validate() error {
 		problems = append(problems, "auto_restart.initial_backoff must be at least 1 second")
 	}
 
+	b := c.Backup
+
+	if len(b.FoldersToSave) == 0 {
+		problems = append(problems, "backup.folders_to_save must not be empty")
+	}
+
+	switch {
+	case b.Directory == "":
+		problems = append(problems, "backup.directory must not be empty")
+	}
+	if b.Keep < 1 {
+		problems = append(problems, "backup.keep must be at least 1")
+	}
+	if b.FlushTimeout < minFlushTimeout {
+		problems = append(problems, fmt.Sprintf("backup.flush_timeout must be at least %s", minFlushTimeout))
+	}
+
+	for _, f := range b.FoldersToSave {
+		switch {
+		case f == "":
+			problems = append(problems, "folder must not be empty")
+		case f == "." || f == ".." || f != filepath.Base(f):
+			problems = append(problems, "folder must be a plain folder name, not a path")
+		}
+
+		world := filepath.Join(c.Minecraft.Directory, f)
+		if within(world, b.Directory) {
+			problems = append(problems, "backup.directory must not be inside the folder")
+		}
+	}
+
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
 	}
@@ -207,4 +265,15 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// within reports whether child is parent or lives under it.
+func within(parent, child string) bool {
+	p, err1 := filepath.Abs(parent)
+	c, err2 := filepath.Abs(child)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(p, c)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

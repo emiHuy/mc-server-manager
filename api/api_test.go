@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/emiHuy/mc-server-manager/backup"
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/apitypes"
 	"github.com/emiHuy/mc-server-manager/minecraft"
@@ -33,6 +34,17 @@ const (
 	testRestarterMax = 5
 )
 
+// ctxBackups is a backupService whose Create blocks until the context it was given ends.
+// It reports that context's error on ended, so a test can see why Create was stopped.
+type ctxBackups struct {
+	started chan struct{}
+	ended   chan error
+}
+
+func newCtxBackups() *ctxBackups {
+	return &ctxBackups{started: make(chan struct{}), ended: make(chan error, 1)}
+}
+
 // newTestRestarter returns a disabled restarter for tests that don't care about it.
 func newTestRestarter(t *testing.T, inst *minecraft.Instance) *minecraft.Restarter {
 	t.Helper()
@@ -47,14 +59,14 @@ func newTestRestarter(t *testing.T, inst *minecraft.Instance) *minecraft.Restart
 func newTestServer(t *testing.T, inst *minecraft.Instance) *httptest.Server {
 	t.Helper()
 
-	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst))
+	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst), nil)
 	return httptest.NewTestServer(t, s.httpServer.Handler)
 }
 
 func newTestServerWithRestarter(t *testing.T, inst *minecraft.Instance, r *minecraft.Restarter) *httptest.Server {
 	t.Helper()
 
-	s := New(config.APIConfig{}, inst, r)
+	s := New(config.APIConfig{}, inst, r, nil)
 	return httptest.NewServer(s.httpServer.Handler) // plus whatever cleanup your helper already does
 }
 
@@ -162,6 +174,7 @@ type eventBody struct {
 	Player  string `json:"player"`
 	Message string `json:"message"`
 	State   string `json:"state"`
+	Backup  string `json:"backup"`
 }
 
 type autoRestartBody struct {
@@ -178,7 +191,7 @@ type autoRestartBody struct {
 
 func TestNewSetsReadHeaderTimeout(t *testing.T) {
 	inst := newStoppedInstance()
-	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst))
+	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst), nil)
 
 	if s.httpServer.ReadHeaderTimeout <= 0 {
 		t.Error("ReadHeaderTimeout is not set; slow clients can hold connections open")
@@ -201,7 +214,7 @@ func TestNewBuildsAddress(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inst := newStoppedInstance()
-			s := New(tt.conf, inst, newTestRestarter(t, inst))
+			s := New(tt.conf, inst, newTestRestarter(t, inst), nil)
 			if s.httpServer.Addr != tt.want {
 				t.Errorf("Addr = %q, want %q", s.httpServer.Addr, tt.want)
 			}
@@ -214,7 +227,7 @@ func TestNewBuildsAddress(t *testing.T) {
 // It uses a real listener because httptest cannot set BaseContext.
 func TestShutdownEndsStreams(t *testing.T) {
 	inst := newStoppedInstance()
-	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst))
+	s := New(config.APIConfig{}, inst, newTestRestarter(t, inst), nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -254,6 +267,8 @@ func TestWrongMethod(t *testing.T) {
 		{"get on start", http.MethodGet, "/api/server/start", "POST"},
 		{"get on stop", http.MethodGet, "/api/server/stop", "POST"},
 		{"get on restart", http.MethodGet, "/api/server/restart", "POST"},
+		{"put on collection", http.MethodPut, "/api/backups", "GET, POST"},
+		{"delete on collection", http.MethodDelete, "/api/backups", "GET, POST"},
 	}
 
 	for _, tt := range tests {
@@ -1030,5 +1045,135 @@ func TestServerAutoRestartRejectsWrongMethod(t *testing.T) {
 	}
 	if allow := resp.Header.Get("Allow"); allow != http.MethodPost {
 		t.Errorf("Allow = %q, want %q", allow, http.MethodPost)
+	}
+}
+
+func (c *ctxBackups) Create(ctx context.Context) (backup.Info, error) {
+	close(c.started) // each test makes exactly one request
+	<-ctx.Done()
+	c.ended <- ctx.Err()
+	return backup.Info{}, ctx.Err()
+}
+
+func (c *ctxBackups) List() ([]backup.Info, error) { return nil, nil }
+func (c *ctxBackups) Delete(id string) error       { return nil }
+
+// startBackupServer serves the API on a real listener.
+// httptest cannot set BaseContext, which the shutdown test depends on.
+func startBackupServer(t *testing.T, b backupService) (s *Server, url string) {
+	t.Helper()
+
+	s = New(config.APIConfig{}, newStoppedInstance(), nil, b)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.httpServer.Serve(ln)
+	t.Cleanup(func() { s.httpServer.Close() })
+
+	return s, "http://" + ln.Addr().String()
+}
+
+func waitStarted(t *testing.T, b *ctxBackups) {
+	t.Helper()
+
+	select {
+	case <-b.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the backup never started")
+	}
+}
+
+func waitEnded(t *testing.T, b *ctxBackups) error {
+	t.Helper()
+
+	select {
+	case err := <-b.ended:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("the running backup was never told to stop")
+		return nil
+	}
+}
+
+// If the client gives up (the CLI on Ctrl+C, a closed tab), the handler must pass
+// r.Context() to Create so the backup stops waiting and autosave is turned back on.
+func TestBackupCreateStopsWhenClientDisconnects(t *testing.T) {
+	b := newCtxBackups()
+	_, url := startBackupServer(t, b)
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url+"/api/backups", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	waitStarted(t, b)
+	cancel() // the client goes away mid-backup
+
+	if err := waitEnded(t, b); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create context error = %v, want context.Canceled", err)
+	}
+}
+
+// Shutdown waits for in-flight requests, so a backup that ignored the shutdown would
+// hold it up until the deadline. This is the backup version of TestShutdownEndsStreams.
+func TestShutdownStopsRunningBackup(t *testing.T) {
+	b := newCtxBackups()
+	s, url := startBackupServer(t, b)
+
+	go func() {
+		resp, err := http.Post(url+"/api/backups", "", nil)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	waitStarted(t, b)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error: %v, want a running backup to be cancelled so it can finish", err)
+	}
+
+	if err := waitEnded(t, b); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create context error = %v, want context.Canceled", err)
+	}
+}
+
+func TestEventsStreamCarriesBackupEvents(t *testing.T) {
+	inst := newStoppedInstance()
+	server := newTestServer(t, inst)
+
+	resp, events := openStream(t, server, "/api/server/events")
+	checkStreamHeaders(t, resp)
+	events.next(t) // the opening state_changed; the subscription exists once it arrives
+
+	inst.PublishEvent(minecraft.Event{Type: minecraft.EventBackupStarted, Backup: "backup-20261112-153000"})
+	inst.PublishEvent(minecraft.Event{Type: minecraft.EventBackupFailed, Backup: "backup-20261112-153000", Message: "backup failed"})
+
+	var started, failed eventBody
+	if err := json.Unmarshal([]byte(events.next(t)), &started); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(events.next(t)), &failed); err != nil {
+		t.Fatal(err)
+	}
+
+	if started.Type != "backup_started" || started.Backup != "backup-20261112-153000" {
+		t.Errorf("first event = %+v, want backup_started for backup-20261112-153000", started)
+	}
+	if failed.Type != "backup_failed" || failed.Message != "backup failed" {
+		t.Errorf("second event = %+v, want backup_failed with its message", failed)
 	}
 }

@@ -12,7 +12,7 @@ import (
 func newAuthTestServer(t *testing.T, token string) *httptest.Server {
 	t.Helper()
 	inst := newStoppedInstance()
-	s := New(config.APIConfig{Token: token}, inst, newTestRestarter(t, inst))
+	s := New(config.APIConfig{Token: token}, inst, newTestRestarter(t, inst), nil)
 	return httptest.NewTestServer(t, s.httpServer.Handler)
 }
 

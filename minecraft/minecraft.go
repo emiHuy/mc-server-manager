@@ -475,6 +475,15 @@ func (inst *Instance) SetOnCrash(f func(ranFor time.Duration)) {
 	inst.mu.Unlock()
 }
 
+// PublishEvent publishes an event that did not come from the console, such as backup activity.
+// It fills in the timestamp if the caller left it empty.
+func (inst *Instance) PublishEvent(e Event) {
+	if e.Timestamp.IsZero() {
+		e.Timestamp = time.Now()
+	}
+	inst.events.Publish(e)
+}
+
 // preflight checks if the specified server address is available for use.
 func (inst *Instance) preflight() error {
 	host, port, err := serverAddrFromProperties(inst.conf.Directory)

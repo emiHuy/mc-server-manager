@@ -33,6 +33,7 @@ type EventResponse struct {
 	Player    string    `json:"player,omitempty"`
 	Message   string    `json:"message,omitempty"`
 	State     string    `json:"state,omitempty"`
+	Backup    string    `json:"backup,omitempty"`
 }
 
 type ConsoleResponse struct {
@@ -57,4 +58,14 @@ type AutoRestartResponse struct {
 	MaxRestarts int        `json:"max_restarts"`
 	NextRetryAt *time.Time `json:"next_retry_at"`
 	GaveUp      bool       `json:"gave_up"`
+}
+
+type BackupResponse struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	SizeBytes int64     `json:"size_bytes"`
+}
+
+type BackupListResponse struct {
+	Backups []BackupResponse `json:"backups"`
 }

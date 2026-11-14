@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/emiHuy/mc-server-manager/backup"
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
 
@@ -39,6 +40,12 @@ func statusFor(err error) int {
 	case errors.Is(err, minecraft.ErrInvalidState) || errors.Is(err, minecraft.ErrPreflight):
 		return http.StatusConflict
 	case errors.Is(err, minecraft.ErrInvalidCommand):
+		return http.StatusBadRequest
+	case errors.Is(err, backup.ErrInProgress):
+		return http.StatusConflict
+	case errors.Is(err, backup.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, backup.ErrInvalidID):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
