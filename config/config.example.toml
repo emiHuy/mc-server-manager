@@ -25,5 +25,11 @@ enabled = true
 max_restarts = 5
 initial_backoff = "5s"
 
+[backup]
+directory = "backups"       # where backups are written
+keep = 7                    # how many newest backups to retain
+folders_to_save = ["world"] # list of folder names inside minecraft.directory
+flush_timeout = "30s"       # max wait for "Saved the game"
+
 [options]
 log_level = "debug"
