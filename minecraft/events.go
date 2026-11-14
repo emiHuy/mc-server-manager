@@ -16,6 +16,7 @@ type Event struct {
 	Player    string // only meaningful for EventPlayerJoined, EventPlayerLeft, EventPlayerChat
 	Message   string // the console message; for chat events, just the chat text
 	State     State  // only meaningful for EventStateChanged
+	Backup    string // backup ID; only meaningful for the backup events
 }
 
 // EventStateChanged is published by Instance when its state changes.
@@ -29,6 +30,9 @@ const (
 	EventPlayerJoined
 	EventPlayerLeft
 	EventPlayerChat
+	EventBackupStarted
+	EventBackupCompleted
+	EventBackupFailed
 )
 
 func (et EventType) String() string {
@@ -47,6 +51,12 @@ func (et EventType) String() string {
 		return "player_left"
 	case EventPlayerChat:
 		return "player_chat"
+	case EventBackupStarted:
+		return "backup_started"
+	case EventBackupCompleted:
+		return "backup_completed"
+	case EventBackupFailed:
+		return "backup_failed"
 	default:
 		return "unknown"
 	}
@@ -57,7 +67,7 @@ func (et EventType) MarshalText() ([]byte, error) {
 }
 
 func (et *EventType) UnmarshalText(text []byte) error {
-	for _, e := range []EventType{EventServerWarning, EventServerError, EventServerReady, EventStateChanged, EventPlayerJoined} {
+	for e := EventServerWarning; e <= EventBackupFailed; e++ {
 		if e.String() == string(text) {
 			*et = e
 			return nil
