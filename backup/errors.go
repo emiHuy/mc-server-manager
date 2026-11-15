@@ -8,7 +8,9 @@ import (
 var (
 	ErrInProgress = errors.New("backup: another backup is in progress")
 	ErrNotFound   = errors.New("backup: not found")
-	ErrInvalidID  = errors.New("bacup: invalid id")
+	ErrInvalidID  = errors.New("backup: invalid id")
+	ErrServerBusy = errors.New("backup: server is starting or stopping, try again shortly")
+	ErrChanged    = errors.New("backup: world changed")
 )
 
 // failureReason is a short message that is safe to show to API clients.

@@ -339,6 +339,10 @@ func TestStatusFor(t *testing.T) {
 		{"wrapped api error", fmt.Errorf("x: %w", errNotFound), http.StatusNotFound},
 		{"unknown error", errors.New("boom"), http.StatusInternalServerError},
 		{"wrapped unknown error", fmt.Errorf("wrapped: %w", errors.New("boom")), http.StatusInternalServerError},
+		{"backup in progress", backup.ErrInProgress, http.StatusConflict},
+		{"backup server busy", backup.ErrServerBusy, http.StatusConflict},
+		{"backup not found", backup.ErrNotFound, http.StatusNotFound},
+		{"backup invalid id", backup.ErrInvalidID, http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
@@ -454,6 +458,10 @@ func TestServerStatusStopped(t *testing.T) {
 	// Clients iterate over players, so it must be [] and never null.
 	if !strings.Contains(raw, `"players":[]`) {
 		t.Errorf("body = %s, want players as an empty array, not null", raw)
+	}
+
+	if strings.Contains(raw, "next_backup") {
+		t.Errorf("body = %s, want next_backup omitted when scheduled backups are off", raw)
 	}
 }
 

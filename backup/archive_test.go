@@ -78,7 +78,7 @@ func TestZipWorldContents(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := zipWorld(&buf, src, []string{"world"}); err != nil {
+	if err := zipWorld(&buf, src, "world"); err != nil {
 		t.Fatalf("zipWorld: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestZipWorldMissingWorld(t *testing.T) {
 	src := makeSource(t, map[string]string{"server.properties": "props"})
 
 	var buf bytes.Buffer
-	if err := zipWorld(&buf, src, []string{"world"}); err == nil {
+	if err := zipWorld(&buf, src, "world"); err == nil {
 		t.Fatal("expected an error when the world folder does not exist")
 	}
 }
@@ -112,7 +112,7 @@ func TestZipWorldSkipsSymlinks(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := zipWorld(&buf, src, []string{"world"}); err != nil {
+	if err := zipWorld(&buf, src, "world"); err != nil {
 		t.Fatalf("zipWorld: %v", err)
 	}
 

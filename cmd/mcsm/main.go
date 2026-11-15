@@ -216,6 +216,12 @@ func (c *client) status(ctx context.Context) error {
 		fmt.Printf("Players: %d (%s)\n", len(s.Players), strings.Join(s.Players, ", "))
 	}
 	fmt.Printf("Restart: %s\n", autoRestartSummary(s.AutoRestart))
+
+	if s.NextBackup != nil {
+		fmt.Printf("Next backup: %s (in %s)\n",
+			s.NextBackup.Local().Format("Mon 15:04"),
+			time.Until(*s.NextBackup).Round(time.Minute))
+	}
 	return nil
 }
 

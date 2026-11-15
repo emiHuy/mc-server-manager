@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 )
 
-func writeZip(dst string, sourceDir string, foldersToSave []string) error {
+func writeZip(dst string, sourceDir string, world string) error {
 	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
-	err = zipWorld(f, sourceDir, foldersToSave)
+	err = zipWorld(f, sourceDir, world)
 	if err == nil {
 		err = f.Sync() // flush to disk before the rename makes it "real"
 	}
@@ -23,28 +23,26 @@ func writeZip(dst string, sourceDir string, foldersToSave []string) error {
 	return err
 }
 
-func zipWorld(w io.Writer, sourceDir string, foldersToSave []string) error {
+func zipWorld(w io.Writer, sourceDir string, world string) error {
 	zw := zip.NewWriter(w)
 
-	for _, folder := range foldersToSave {
-		root := filepath.Join(sourceDir, folder)
+	root := filepath.Join(sourceDir, world)
 
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err // includes the world folder not existing
-			}
-			if d.IsDir() || !d.Type().IsRegular() || d.Name() == "session.lock" {
-				return nil
-			}
-			rel, err := filepath.Rel(sourceDir, path) // keeps "world/" as the top folder
-			if err != nil {
-				return err
-			}
-			return addFile(zw, path, filepath.ToSlash(rel))
-		})
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err // includes the world folder not existing
+		}
+		if d.IsDir() || !d.Type().IsRegular() || d.Name() == "session.lock" {
+			return nil
+		}
+		rel, err := filepath.Rel(sourceDir, path) // keeps "world/" as the top folder
 		if err != nil {
 			return err
 		}
+		return addFile(zw, path, filepath.ToSlash(rel))
+	})
+	if err != nil {
+		return err
 	}
 
 	return zw.Close()

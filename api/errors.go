@@ -41,7 +41,7 @@ func statusFor(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, minecraft.ErrInvalidCommand):
 		return http.StatusBadRequest
-	case errors.Is(err, backup.ErrInProgress):
+	case errors.Is(err, backup.ErrInProgress), errors.Is(err, backup.ErrServerBusy):
 		return http.StatusConflict
 	case errors.Is(err, backup.ErrNotFound):
 		return http.StatusNotFound
