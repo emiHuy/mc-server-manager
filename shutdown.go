@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/api"
+	"github.com/emiHuy/mc-server-manager/backup"
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
 
@@ -44,8 +45,9 @@ func stopMinecraft(instance stopper, sig <-chan os.Signal) {
 	}
 }
 
-func shutdown(instance *minecraft.Instance, restarter *minecraft.Restarter, server *api.Server, sig <-chan os.Signal) {
+func shutdown(instance *minecraft.Instance, restarter *minecraft.Restarter, scheduler *backup.Scheduler, server *api.Server, sig <-chan os.Signal) {
 	restarter.Disable()
+	scheduler.Stop()
 
 	select {
 	case <-instance.Done(): // nothing is running

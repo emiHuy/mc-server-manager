@@ -60,7 +60,14 @@ func main() {
 
 	backups := backup.New(instance, conf.Minecraft.Directory, conf.Backup)
 
-	server := api.New(conf.API, instance, restarter, backups)
+	var scheduler *backup.Scheduler // stays nil when scheduled backups are off
+	if conf.Backup.Interval > 0 {
+		scheduler = backup.NewScheduler(backups, conf.Backup.Interval)
+		scheduler.Start()
+		slog.Info("scheduled backups enabled", "interval", conf.Backup.Interval.String(), "keep", conf.Backup.Keep)
+	}
+
+	server := api.New(conf.API, instance, restarter, backups, api.WithNextBackup(scheduler))
 	slog.Info("starting api server")
 
 	apiErr := make(chan error, 1)
@@ -83,5 +90,5 @@ func main() {
 		slog.Error("api server failed", "error", err)
 	}
 
-	shutdown(instance, restarter, server, sig)
+	shutdown(instance, restarter, scheduler, server, sig)
 }
