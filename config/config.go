@@ -32,6 +32,7 @@ const (
 	defaultBackupKeep         = 7
 	defaultBackupWorld        = "world"
 	defaultBackupFlushTimeout = 30 * time.Second
+	minBackupInterval         = 5 * time.Minute
 )
 
 // Config contains the application configuration.
@@ -73,6 +74,7 @@ type BackupConfig struct {
 	Keep         int           `toml:"keep"`
 	World        string        `toml:"world"`
 	FlushTimeout time.Duration `toml:"flush_timeout"`
+	Interval     time.Duration `toml:"interval"`
 }
 
 // Options contains application-level options.
@@ -206,6 +208,9 @@ func (c *Config) validate() error {
 	}
 	if b.FlushTimeout < minFlushTimeout {
 		problems = append(problems, fmt.Sprintf("backup.flush_timeout must be at least %s", minFlushTimeout))
+	}
+	if b.Interval != 0 && b.Interval < minBackupInterval {
+		problems = append(problems, fmt.Sprintf("backup.interval must be 0 (off) or at least %s", minBackupInterval))
 	}
 
 	if b.World == "" {
