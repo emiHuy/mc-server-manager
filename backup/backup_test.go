@@ -517,3 +517,41 @@ func TestCreateRunsRetention(t *testing.T) {
 		t.Fatalf("after Create with keep=1, List = %v, want only [%s]", got, info.ID)
 	}
 }
+
+func TestChangedSince(t *testing.T) {
+	cutoff := time.Date(2026, time.November, 14, 12, 0, 0, 0, time.UTC)
+	src := makeSource(t, map[string]string{"world/level.dat": "x", "world/session.lock": "x"})
+	m := newCreateManager(t, nil, src, 3)
+
+	setTime := func(name string, mtime time.Time) {
+		if err := os.Chtimes(filepath.Join(src, filepath.FromSlash(name)), mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// An older world file and a newer session.lock (which is ignored) means unchanged.
+	setTime("world/level.dat", cutoff.Add(-time.Hour))
+	setTime("world/session.lock", cutoff.Add(time.Hour))
+	if changed, err := m.changedSince(cutoff); err != nil || changed {
+		t.Fatalf("changedSince = %v, %v, want false, nil", changed, err)
+	}
+
+	// A newer world file means changed, and the walk's internal stop error must not leak out.
+	setTime("world/level.dat", cutoff.Add(time.Hour))
+	if changed, err := m.changedSince(cutoff); err != nil || !changed {
+		t.Fatalf("changedSince = %v, %v, want true, nil", changed, err)
+	}
+}
+
+func TestCreateRefusesWhileStarting(t *testing.T) {
+	ctl := newFakeController(minecraft.StateStarting)
+	src := makeSource(t, map[string]string{"world/level.dat": "data"})
+	m := newCreateManager(t, ctl, src, 3)
+
+	if _, err := m.Create(context.Background()); !errors.Is(err, ErrServerBusy) {
+		t.Fatalf("Create error = %v, want ErrServerBusy", err)
+	}
+	if got := ctl.Sent(); len(got) != 0 {
+		t.Errorf("a refused backup sent commands: %v", got)
+	}
+}

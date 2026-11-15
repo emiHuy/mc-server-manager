@@ -61,6 +61,10 @@ func (m *Manager) Create(ctx context.Context) (Info, error) {
 	}
 	defer m.mu.Unlock()
 
+	if st := m.ctl.State(); st == minecraft.StateStarting || st == minecraft.StateStopping {
+		return Info{}, ErrServerBusy
+	}
+
 	id := newID(time.Now())
 	m.publish(minecraft.EventBackupStarted, id, "")
 
@@ -204,6 +208,32 @@ func (m *Manager) enforceRetention() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// changedSince reports whether any file in the world folder was modified after t.
+func (m *Manager) changedSince(t time.Time) (bool, error) {
+	root := filepath.Join(m.sourceDir, m.conf.World)
+
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Name() == "session.lock" {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil // removed while walking
+		}
+		if info.ModTime().After(t) {
+			return ErrChanged // stops the walk at the first newer file
+		}
+		return nil
+	})
+	if errors.Is(err, ErrChanged) {
+		return true, nil
+	}
+	return false, err
 }
 
 func (m *Manager) path(id string) string {
