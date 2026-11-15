@@ -80,6 +80,9 @@ With `auto_restart` enabled, a crashed server is restarted after a delay that do
 - Readiness detection expects vanilla's "Done" line.
 - A backup waits for vanilla's "Saved the game" line. If it never appears, the backup fails after `backup.flush_timeout` and autosaving is turned back on.
 - Backups live on the same machine, and on the same disk unless `backup.directory` points elsewhere, so copy them off the machine if you want protection from disk failure.
+- Backup settings, including `backup.interval`, are read once at startup. Changing them means editing `config.toml` and restarting the manager.
+- Scheduled backups run on a fixed interval, not at set times of day, and an interval's backup is skipped when the world hasn't changed since the last one.
+- Shutting down waits for a backup that is already writing its archive, so stopping the manager can take longer on a large world.
 
 ## Development
 
@@ -90,8 +93,6 @@ go vet ./...
 
 ## TODO
 
-- Scheduled backups
-- Scheduled online/offline hours
 - Optional TLS
 - Server properties + config editor
 - ESP32 server monitoring
