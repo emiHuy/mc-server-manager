@@ -21,12 +21,20 @@ const (
 
 func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 	status := s.instance.Status()
-	writeJSON(w, http.StatusOK, apitypes.StatusResponse{
+	resp := apitypes.StatusResponse{
 		State:         status.State.String(),
 		UptimeSeconds: int64(status.Uptime.Seconds()),
 		Players:       status.Players,
 		AutoRestart:   newAutoRestartResponse(s.restarter.Status()),
-	})
+	}
+
+	if s.nextBackup != nil {
+		if t, ok := s.nextBackup.NextRun(); ok {
+			resp.NextBackup = &t
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleServerStart(w http.ResponseWriter, r *http.Request) {

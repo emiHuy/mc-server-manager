@@ -12,6 +12,7 @@ type StatusResponse struct {
 	UptimeSeconds int64               `json:"uptime_seconds"`
 	Players       []string            `json:"players"`
 	AutoRestart   AutoRestartResponse `json:"auto_restart"`
+	NextBackup    *time.Time          `json:"next_backup,omitempty"`
 }
 
 type MetricsResponse struct {

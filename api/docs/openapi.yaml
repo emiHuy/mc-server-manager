@@ -340,6 +340,10 @@ components:
           type: array
           items: { type: string }
         auto_restart: { $ref: "#/components/schemas/AutoRestart" }
+        next_backup:
+          type: string
+          format: date-time
+          description: When the next scheduled backup is planned. Omitted when scheduled backups are off, or while a backup is running.
 
     Metrics:
       type: object

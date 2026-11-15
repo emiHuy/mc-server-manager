@@ -37,6 +37,7 @@ type Server struct {
 	instance   *minecraft.Instance
 	restarter  *minecraft.Restarter
 	backups    backupService
+	nextBackup nextBackupper
 	token      string
 }
 
@@ -45,12 +46,27 @@ type methodHandler struct {
 	handler http.HandlerFunc
 }
 
-func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecraft.Restarter, backups backupService) *Server {
+type Option func(*Server)
+
+// nextBackupper reports when the next scheduled backup is planned.
+type nextBackupper interface {
+	NextRun() (time.Time, bool)
+}
+
+func WithNextBackup(n nextBackupper) Option {
+	return func(s *Server) { s.nextBackup = n }
+}
+
+func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecraft.Restarter, backups backupService, opts ...Option) *Server {
 	s := Server{
 		instance:  instance,
 		restarter: restarter,
 		backups:   backups,
 		token:     conf.Token,
+	}
+
+	for _, opt := range opts {
+		opt(&s)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
