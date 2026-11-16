@@ -20,6 +20,7 @@
             </div>
             <nav>
                 <button class="on" data-view="overview">Overview</button>
+                <button class="" data-view="backups">Backups <small id="backups-tab-count"></small></button>
             </nav>
             <div class="side-foot">
                 <div>
@@ -51,7 +52,6 @@
                         <span class="dot" id="state-dot"></span>
                         <span id="state-value">Stopped</span>
                     </div>
-                    <div class="sub" id="state-sub">Not running</div>
                 </div>
                 <div class="cell">
                     <div class="key">Uptime</div>
@@ -93,6 +93,7 @@
                             <button data-filter="warnings">Warning <span data-count="warnings"></span></button>
                             <button data-filter="errors">Errors <span data-count="errors"></span></button>
                             <button data-filter="state">State</button>
+                            <button data-filter="backups">Backups</button>
                         </div>
                         <div class="events-head">
                             <span>Time</span>
@@ -186,6 +187,23 @@
                         <div class="xaxis"><span id="players-start">0m ago</span><span>now</span></div>
                     </section>
                 </div>
+            </div>
+            <div id="view-backups" hidden>
+                <section class="panel backup-panel">
+                    <h2>
+                        <div>
+                            Backups &nbsp; <span id="backups-sub">0 · 0.0 GB</span>
+                        </div>
+                        <button class="btn primary small" id="btn-backup-now">Back up now</button>
+                    </h2>
+                    <div class="backups-head b">
+                        <span>Created</span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <div id="backups-list"></div>
+                    <p class="empty" id="no-backups">No backups yet.</p>
+                </section>
             </div>
         </main>
     </div>
