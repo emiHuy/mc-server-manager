@@ -30,6 +30,7 @@ type backupService interface {
 	Create(ctx context.Context) (backup.Info, error)
 	List() ([]backup.Info, error)
 	Delete(id string) error
+	BackupExists(id string) (string, error)
 }
 
 type Server struct {
@@ -115,6 +116,7 @@ func (s *Server) routes() *http.ServeMux {
 		methodHandler{http.MethodPost, s.handleBackupCreate},
 	)
 	handle(mux, http.MethodDelete, "/api/backups/{id}", s.handleBackupDelete)
+	handle(mux, http.MethodGet, "/api/backups/{id}/download", s.handleBackupDownload)
 
 	docsSite, err := fs.Sub(docsFiles, "docs")
 	if err != nil {

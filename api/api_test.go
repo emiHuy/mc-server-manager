@@ -1063,8 +1063,9 @@ func (c *ctxBackups) Create(ctx context.Context) (backup.Info, error) {
 	return backup.Info{}, ctx.Err()
 }
 
-func (c *ctxBackups) List() ([]backup.Info, error) { return nil, nil }
-func (c *ctxBackups) Delete(id string) error       { return nil }
+func (c *ctxBackups) List() ([]backup.Info, error)           { return nil, nil }
+func (c *ctxBackups) Delete(id string) error                 { return nil }
+func (c *ctxBackups) BackupExists(id string) (string, error) { return "", nil }
 
 // startBackupServer serves the API on a real listener.
 // httptest cannot set BaseContext, which the shutdown test depends on.

@@ -75,6 +75,11 @@ body {
     color: var(--mute);
 }
 
+button.small {
+    padding: 3px 9px;
+    font-size: 12px;
+}
+
 /* Side */
 .side {
     position: sticky;
@@ -454,11 +459,21 @@ main {
     color: var(--blue);
 }
 
+.event.backup b {
+    color: var(--mute);
+}
+
+.event.backup-completed b {
+    color: var(--green);
+}
+
+
 #events[data-filter="players"] .event:not([data-group="players"]),
 #events[data-filter="chat"] .event:not([data-group="chat"]),
 #events[data-filter="warnings"] .event:not([data-group="warnings"]),
 #events[data-filter="errors"] .event:not([data-group="errors"]),
-#events[data-filter="state"] .event:not([data-group="state"]) {
+#events[data-filter="state"] .event:not([data-group="state"]),
+#events[data-filter="backups"] .event:not([data-group="backups"]) {
     display: none;
 }
 
@@ -852,6 +867,56 @@ main {
     background: #e6e8ea;
     color: #0e1012;
     border-color: #e6e8ea;
+}
+
+/* backups */
+.backup-panel {
+    margin-top: 15px;
+}
+
+.backups-head {
+    font-size: 11.5px;
+    color: var(--mute);
+    border-bottom: 1px solid var(--line);
+    background: var(--panel2);
+    padding: 5px 15px;
+}
+
+.backups-head,
+.backup-row {
+    grid-template-columns: minmax(0, 1fr) 80px 230px;
+}
+
+.backup-row {
+    display: grid;
+    gap: 10px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--line);
+    align-items: center;
+}
+
+.backup-row .name {
+    display: block;
+    color: var(--mute);
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.backup-row .size {
+    text-align: right;
+    font-size: 12px;
+}
+
+.backup-row .download {
+    text-decoration: none;
+}
+
+.backup-row .tools {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
 }
 
 /* toast */

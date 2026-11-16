@@ -16,6 +16,9 @@ const GROUPS = {
   player_chat: "chat",
   server_warning: "warnings",
   server_error: "errors",
+  backup_started: "backups",
+  backup_completed: "backups",
+  backup_failed: "backup",
 };
 
 const players = new Map(); // name -> start time
@@ -38,6 +41,18 @@ const $ = (selector) => {
     throw new Error("missing element: " + selector);
   }
   return element;
+};
+
+const fmtBytes = (bytes) => {
+  if (!bytes || bytes <= 0) return "0 B";
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+
+  return `${Math.round(bytes / 1024 ** i)} ${units[i]}`;
 };
 
 const fmtGB = (b) => (b / GB).toFixed(1) + " GB";
@@ -234,6 +249,22 @@ function markStale() {
     $(id).classList.remove(...STATES);
 }
 
+// ----- Views -----
+function setView(btn) {
+  const v = btn.dataset.view;
+
+  $("#view-title").textContent = v.charAt(0).toUpperCase() + v.slice(1);
+
+  $("nav button.on").classList.remove("on");
+  btn.classList.add("on");
+
+  document
+    .querySelectorAll('div[id^="view-"]:not(#view-title)')
+    .forEach((div) => {
+      div.hidden = div.id !== `view-${v}`;
+    });
+}
+
 // ----- Server State -----
 
 function applyState(s) {
@@ -359,6 +390,11 @@ function handleEvent(e) {
       addToLog($("#chat"), chatRow(e), 10);
       $("#no-chat").hidden = true;
       break;
+    case "backup_completed":
+      renderBackups();
+      break;
+    case "backup_failed":
+      toast(`Backup ${id} failed: ${e.message}`);
   }
 
   eventsCount += 1;
@@ -385,6 +421,12 @@ function eventRow(e) {
     player_chat: ["chat", `<${e.player}> ${e.message}`],
     server_warning: ["warning", e.message],
     server_error: ["error", e.message],
+    backup_started: ["backup", `Backing up world (ID: ${e.backup})`],
+    backup_completed: ["backup-completed", `Backup complete (ID: ${e.backup})`],
+    backup_failed: [
+      "error",
+      `Backup failed (ID: ${e.backup}). Reason: ${e.message}`,
+    ],
   };
   const [label, text] = labels[e.type] ?? ["event", e.message || e.type];
 
@@ -736,6 +778,129 @@ function setupConsoleWindow() {
   };
 }
 
+// ----- Backups -----
+let backups = [];
+
+async function createBackup() {
+  try {
+    await api(`/api/backups`, { method: "POST" });
+    renderBackups();
+  } catch (e) {
+    toast(`Failed to create backup.`);
+  }
+}
+
+async function deleteBackup(id) {
+  try {
+    await api(`/api/backups/${id}`, { method: "DELETE" });
+    renderBackups();
+  } catch (e) {
+    toast(`Failed to delete backup (ID: ${id}).`);
+  }
+}
+
+async function downloadBackup(id) {
+  try {
+    const res = await fetch(`/api/backups/${id}/download`, {
+      method: "GET",
+      headers: {
+        Authorization: "Bearer " + getToken(),
+      },
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem(KEY);
+      location.reload();
+      throw new AuthError("unauthorized");
+    }
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${id}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (err) {
+    toast(`Failed to download ${id}: ${err.message}`);
+  }
+
+  return res;
+}
+
+async function renderBackups() {
+  try {
+    data = await api("/api/backups");
+    backups = data.backups;
+    $("#no-backups").hidden = backups.length > 0 ? true : false;
+  } catch (e) {
+    toast(`Failed to fetch backups.`);
+    return;
+  }
+
+  $("#backups-list").replaceChildren();
+
+  let totalSize = 0;
+
+  for (const backup of backups) {
+    row = document.createElement("div");
+    row.className = "backup-row";
+
+    infoDiv = document.createElement("div");
+
+    timeSpan = document.createElement("span");
+    date = new Date(backup.created_at);
+    const monthDay = date.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    const time = fmtTime(date);
+    timeSpan.textContent = `${monthDay} · ${time}`;
+    infoDiv.appendChild(timeSpan);
+
+    idSpan = document.createElement("span");
+    idSpan.className = "name mono";
+    idSpan.textContent = `${backup.id}.zip`;
+    infoDiv.appendChild(idSpan);
+
+    row.appendChild(infoDiv);
+
+    sizeSpan = document.createElement("span");
+    sizeSpan.className = "size mono";
+    sizeSpan.textContent = fmtBytes(backup.size_bytes);
+    row.appendChild(sizeSpan);
+
+    toolSpan = document.createElement("span");
+    toolSpan.className = "tools";
+
+    download = document.createElement("button");
+    download.className = "btn small download";
+    download.textContent = "Download";
+    download.onclick = async () => downloadBackup(backup.id);
+    toolSpan.appendChild(download);
+
+    deleteBtn = document.createElement("button");
+    deleteBtn.className = "btn small danger";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.onclick = async () => deleteBackup(backup.id);
+    toolSpan.appendChild(deleteBtn);
+    row.appendChild(toolSpan);
+
+    $("#backups-list").appendChild(row);
+
+    totalSize += backup.size_bytes;
+  }
+
+  $("#backups-sub").textContent = `${backups.length} · ${fmtBytes(totalSize)}`;
+}
+
 // ----- Startup -----
 
 function bindControls() {
@@ -750,6 +915,10 @@ function bindControls() {
     root.dataset.theme = next;
     localStorage.setItem("mcsm.theme", next);
   };
+
+  document.querySelectorAll("nav button[data-view]").forEach((btn) => {
+    btn.onclick = () => setView(btn);
+  });
 
   $("#event-filters").addEventListener("click", (ev) => {
     const btn = ev.target.closest("button[data-filter]");
@@ -789,6 +958,8 @@ function bindControls() {
       closeConsole();
     }
   });
+
+  $("#btn-backup-now").onclick = async () => createBackup();
 }
 
 function startTimers() {
@@ -832,6 +1003,8 @@ function init() {
       replayUntil = Date.now() + 1000;
     },
   );
+
+  renderBackups();
 }
 
 init();
