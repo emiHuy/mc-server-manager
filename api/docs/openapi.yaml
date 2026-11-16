@@ -276,6 +276,56 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/backups/{id}/download:
+    get:
+      tags: [backups]
+      operationId: downloadBackup
+      summary: Download a backup
+      description: >
+        Streams the backup's zip file as an attachment. Supports HTTP range
+        requests, so interrupted downloads can resume.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Backup ID.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The backup zip file.
+          headers:
+            Content-Disposition:
+              description: Suggested filename, e.g. `attachment; filename="abc123.zip"`.
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+            Last-Modified:
+              schema:
+                type: string
+            Accept-Ranges:
+              schema:
+                type: string
+                example: bytes
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: Partial content, returned when a `Range` header is sent.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
   securitySchemes:
     bearerAuth:

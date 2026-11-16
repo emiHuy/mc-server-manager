@@ -268,3 +268,16 @@ func (s *Server) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
 	slog.Info("backup deleted", "id", id, "remote", r.RemoteAddr)
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	path, err := s.backups.BackupExists(id)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.zip"`)
+	http.ServeFile(w, r, path)
+}

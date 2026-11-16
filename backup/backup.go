@@ -244,6 +244,23 @@ func (m *Manager) publish(t minecraft.EventType, id, message string) {
 	m.ctl.PublishEvent(minecraft.Event{Type: t, Backup: id, Message: message})
 }
 
+// BackupExists returns the zip path for id, or an error if it is invalid or missing.
+func (m *Manager) BackupExists(id string) (string, error) {
+	path := m.path(id)
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", ErrNotFound
+	}
+
+	return path, nil
+}
+
 // waitFor blocks until a console line contains substr, the timeout passes, or ctx is done.
 func waitFor(ctx context.Context, sub *fanout.Subscription[string], substr string, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
