@@ -22,7 +22,7 @@ func tailscaleAddr(addrs []net.Addr) (netip.Addr, bool) {
 		if !ok {
 			continue
 		}
-		ip = ip.Unmap() // net.ParseIP returns the 16-byte form for IPv4
+		ip = ip.Unmap()
 		if ip.Is4() && tailscaleRange.Contains(ip) {
 			return ip, true
 		}
@@ -44,10 +44,12 @@ func waitForTailscale(ctx context.Context, addrs func() ([]net.Addr, error), eve
 				return ip, nil
 			}
 		}
-		if !logged { // once, not on every poll
-			slog.Warn("waiting for tailscale interface", "range", tailscaleRange.String(), "timeout", limit.String())
+
+		if !logged {
+			slog.Warn("main: waiting for tailscale interface", "range", tailscaleRange.String(), "timeout", limit.String())
 			logged = true
 		}
+
 		select {
 		case <-ctx.Done():
 			return netip.Addr{}, fmt.Errorf("no address in %s: %w", tailscaleRange, ctx.Err())
