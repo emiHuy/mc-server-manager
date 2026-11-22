@@ -26,7 +26,7 @@ min_memory = "2G"
 max_memory = "4G"
 `
 
-func TestLoadConfig_Defaults(t *testing.T) {
+func TestLoadConfigDefaults(t *testing.T) {
 	path := writeTOML(t, baseMinecraftTOML)
 
 	cfg, err := loadConfig(path)
@@ -48,7 +48,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	require.Equal(t, defaultLogLevel, cfg.Options.LogLevel, "options.log_level should match default")
 }
 
-func TestLogConfig_ValidationErrors(t *testing.T) {
+func TestLogConfigValidationErrors(t *testing.T) {
 	tests := []struct {
 		name    string
 		toml    string
