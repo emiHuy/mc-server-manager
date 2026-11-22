@@ -2,17 +2,15 @@ package fanout
 
 // Subscription represents a subscriber to a Hub.
 //
-// C is the receive-only channel through which published items are delivered.
 // A subscription must be canceled when it is no longer needed.
 type Subscription[T any] struct {
-	C       <-chan T
+	C       <-chan T // receive-only channel through which published items are delivered.
 	ch      chan T
 	hub     *Hub[T]
 	dropped int
 }
 
-// Dropped returns the number of items discarded because the subscriber's
-// channel was full.
+// Dropped returns the number of items discarded because the subscriber's channel was full.
 //
 // It is safe to call concurrently with publishing and cancellation.
 func (s *Subscription[T]) Dropped() int {

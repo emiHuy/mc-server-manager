@@ -3,22 +3,17 @@ package portcheck
 import (
 	"net"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestAvailable(t *testing.T) {
-	listener, err := net.Listen("tcp", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
 
 	addr := listener.Addr().String()
-
-	if err := Available(addr); err == nil {
-		t.Errorf("Available(%s) = nil while port is held, want error", addr)
-	}
+	require.Error(t, Available(addr))
 
 	listener.Close()
-	if err := Available(addr); err != nil {
-		t.Errorf("Available(%s) after close = %v, want nil", addr, err)
-	}
+	require.NoError(t, Available(addr))
 }
