@@ -1,0 +1,356 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json/v2"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/emiHuy/mc-server-manager/internal/apitypes"
+)
+
+type apiError struct {
+	status int
+	msg    string
+}
+
+func (e *apiError) Error() string {
+	return e.msg
+}
+
+type client struct {
+	base  string
+	token string
+}
+
+func (c *client) setAuth(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", `Bearer `+c.token)
+	}
+}
+
+// do sends one request and decodes a JSON response into out (if non-nil).
+func (c *client) do(ctx context.Context, method, path string, body, out any) error {
+	var rd io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rd = bytes.NewReader(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rd)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	c.setAuth(req)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to reach %s: %w", c.base, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return readAPIError(resp)
+	}
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	return json.UnmarshalRead(resp.Body, out)
+}
+
+func (c *client) status(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	var s apitypes.StatusResponse
+	if err := c.do(ctx, http.MethodGet, "/api/server/status", nil, &s); err != nil {
+		return err
+	}
+	fmt.Printf("State:   %s\n", s.State)
+	fmt.Printf("Uptime:  %s\n", seconds(s.UptimeSeconds))
+	if len(s.Players) == 0 {
+		fmt.Println("Players: none")
+	} else {
+		fmt.Printf("Players: %d (%s)\n", len(s.Players), strings.Join(s.Players, ", "))
+	}
+	fmt.Printf("Restart: %s\n", autoRestartSummary(s.AutoRestart))
+
+	if s.NextBackup != nil {
+		fmt.Printf("Next backup: %s (in %s)\n",
+			s.NextBackup.Local().Format("Mon 15:04"),
+			time.Until(*s.NextBackup).Round(time.Minute))
+	}
+	return nil
+}
+
+func (c *client) metrics(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	var m apitypes.MetricsResponse
+	if err := c.do(ctx, http.MethodGet, "/api/server/metrics", nil, &m); err != nil {
+		return err
+	}
+	fmt.Printf("State:   %s\n", m.State)
+	fmt.Printf("Uptime:  %s\n", seconds(m.UptimeSeconds))
+	fmt.Printf("Players: %d\n", m.PlayersOnline)
+	fmt.Printf("CPU:     %.1f%% of machine (%.1f%% of one core, %d cores)\n", m.CPUMachinePercent, m.CPUPercent, m.CPUCores)
+	fmt.Printf("Memory:  %s\n", humanBytes(m.MemoryBytes))
+	fmt.Printf("Disk:    %s used, %s free, %s total\n", humanBytes(m.DiskUsedBytes), humanBytes(m.DiskFreeBytes), humanBytes(m.DiskTotalBytes))
+	return nil
+}
+
+func (c *client) players(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	var s apitypes.StatusResponse
+	if err := c.do(ctx, http.MethodGet, "/api/server/status", nil, &s); err != nil {
+		return err
+	}
+	if len(s.Players) == 0 {
+		fmt.Println("no players online")
+		return nil
+	}
+	fmt.Println(strings.Join(s.Players, "\n"))
+	return nil
+}
+
+func (c *client) start(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	wait := fs.Bool("wait", false, "wait until the server is running")
+	fs.Parse(args)
+
+	if err := c.action(ctx, "start", quickTimeout); err != nil {
+		return err
+	}
+	if !*wait {
+		return nil
+	}
+	return c.waitRunning(ctx)
+}
+
+func (c *client) waitRunning(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, startTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("gave up waiting for the server to run: %w", ctx.Err())
+		case <-ticker.C:
+		}
+
+		pollCtx, pollCancel := context.WithTimeout(ctx, quickTimeout)
+		var s apitypes.StatusResponse
+		err := c.do(pollCtx, http.MethodGet, "/api/server/status", nil, &s)
+		pollCancel()
+		if err != nil {
+			return err
+		}
+
+		switch s.State {
+		case "running":
+			fmt.Println("running")
+			return nil
+		case "crashed", "stopped":
+			return fmt.Errorf("server is %s", s.State)
+		}
+	}
+}
+
+// action POSTs to /api/server/<name> and prints the resulting state.
+func (c *client) action(ctx context.Context, name string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var res apitypes.StateResponse
+	if err := c.do(ctx, http.MethodPost, "/api/server/"+name, nil, &res); err != nil {
+		return err
+	}
+	fmt.Println(res.State)
+	return nil
+}
+
+func (c *client) command(ctx context.Context, text string) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	body := map[string]string{"command": text}
+	return c.do(ctx, http.MethodPost, "/api/server/command", body, nil)
+}
+
+func (c *client) logs(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	n := fs.Int("n", 100, "number of recent lines (1-1000)")
+	follow := fs.Bool("f", false, "follow live output")
+	fs.Parse(args)
+
+	if !*follow {
+		ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+		defer cancel()
+
+		var out struct {
+			Lines []string `json:"lines"`
+		}
+		path := fmt.Sprintf("/api/server/console?lines=%d", *n)
+		if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+			return err
+		}
+		for _, line := range out.Lines {
+			fmt.Println(line)
+		}
+		return nil
+	}
+
+	// A stream has no overall timeout; Ctrl+C cancels ctx and ends it.
+	url := fmt.Sprintf("%s/api/server/console/stream?lines=%d", c.base, *n)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	c.setAuth(req)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("cannot reach %s: %w", c.base, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return readAPIError(resp)
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		data, ok := strings.CutPrefix(sc.Text(), "data:")
+		if !ok {
+			continue // blank separators, comments, other fields
+		}
+		var msg struct {
+			Line string `json:"line"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(data)), &msg) == nil {
+			fmt.Println(msg.Line)
+		}
+	}
+	if err := sc.Err(); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
+}
+
+func (c *client) autoRestart(ctx context.Context, args []string) error {
+	if len(args) != 1 {
+		return usageError("auto-restart needs true or false")
+	}
+	enabled, err := strconv.ParseBool(args[0])
+	if err != nil {
+		return usageError("auto-restart needs true or false, got " + args[0])
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	body := apitypes.AutoRestartRequest{Enabled: &enabled}
+
+	var res apitypes.AutoRestartResponse
+	if err := c.do(ctx, http.MethodPost, "/api/server/auto-restart", body, &res); err != nil {
+		return err
+	}
+	fmt.Println("auto-restart:", autoRestartSummary(res))
+	return nil
+}
+
+func (c *client) backup(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return usageError("backup needs create, list, or delete")
+	}
+
+	switch args[0] {
+	case "create":
+		return c.backupCreate(ctx)
+	case "list":
+		return c.backupList(ctx)
+	case "delete":
+		if len(args) != 2 {
+			return usageError("backup delete needs one backup id")
+		}
+		return c.backupDelete(ctx, args[1])
+	default:
+		return usageError("unknown backup command " + args[0])
+	}
+}
+
+func (c *client) backupCreate(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, backupTimeout)
+	defer cancel()
+
+	var b apitypes.BackupResponse
+	if err := c.do(ctx, http.MethodPost, "/api/backups", nil, &b); err != nil {
+		return err
+	}
+	fmt.Printf("%s (%s)\n", b.ID, humanBytes(uint64(b.SizeBytes)))
+	return nil
+}
+
+func (c *client) backupList(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	var out apitypes.BackupListResponse
+	if err := c.do(ctx, http.MethodGet, "/api/backups", nil, &out); err != nil {
+		return err
+	}
+	if len(out.Backups) == 0 {
+		fmt.Println("no backups")
+		return nil
+	}
+	for _, b := range out.Backups {
+		fmt.Printf("%s  %s  %s\n", b.ID, b.CreatedAt.Local().Format("2006-01-02 15:04"), humanBytes(uint64(b.SizeBytes)))
+	}
+	return nil
+}
+
+func (c *client) backupDelete(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, quickTimeout)
+	defer cancel()
+
+	if err := c.do(ctx, http.MethodDelete, "/api/backups/"+url.PathEscape(id), nil, nil); err != nil {
+		return err
+	}
+	fmt.Println("deleted", id)
+	return nil
+}
+
+func readAPIError(resp *http.Response) error {
+	var e struct {
+		Error string `json:"error"`
+	}
+	json.UnmarshalRead(resp.Body, &e)
+	if e.Error == "" {
+		e.Error = resp.Status
+	}
+	return &apiError{status: resp.StatusCode, msg: e.Error}
+}
