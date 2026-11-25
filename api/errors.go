@@ -59,7 +59,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status := statusFor(err)
 	message := err.Error()
 	if status == http.StatusInternalServerError {
-		slog.Error("request failed", "path", r.URL.Path, "error", err)
+		slog.Error("api: request failed", "path", r.URL.Path, "error", err)
 		message = "internal error"
 	}
 	writeJSON(w, status, errorResponse{Error: message})

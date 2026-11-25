@@ -69,13 +69,13 @@ func (m *Manager) Create(ctx context.Context) (Info, error) {
 
 	info, err := m.createLocked(ctx, id)
 	if err != nil {
-		slog.Error("backup failed", "id", id, "error", err)
+		slog.Error("backup: failed to create backup", "id", id, "error", err)
 		m.publish(minecraft.EventBackupFailed, id, failureReason(err))
 		return Info{}, err
 	}
 
 	if err := m.enforceRetention(); err != nil {
-		slog.Warn("backup retention failed", "error", err) // the backup itself succeeded
+		slog.Warn("backup: retention failed", "error", err) // the backup itself succeeded
 	}
 
 	m.publish(minecraft.EventBackupCompleted, id, "")
@@ -157,7 +157,7 @@ func (m *Manager) createLocked(ctx context.Context, id string) (Info, error) {
 		}
 		defer func() {
 			if err := m.ctl.Send("save-on"); err != nil {
-				slog.Warn("save-on failed", "error", err)
+				slog.Warn("backup: save-on failed", "error", err)
 			}
 		}()
 

@@ -127,7 +127,7 @@ func (s *Scheduler) wait(ctx context.Context, d time.Duration) bool {
 func (s *Scheduler) initialDelay() time.Duration {
 	infos, err := s.backups.List()
 	if err != nil {
-		slog.Warn("cannot read existing backups, scheduling the first backup soon", "error", err)
+		slog.Warn("backup: cannot read existing backups, scheduling the first backup soon", "error", err)
 		return startupDelay
 	}
 	if len(infos) == 0 {
@@ -141,23 +141,23 @@ func (s *Scheduler) attempt(ctx context.Context) time.Duration {
 	s.setNext(time.Time{})
 
 	if s.worldUnchanged() {
-		slog.Info("scheduled backup skipped, the world has not changed since the last backup")
+		slog.Info("backup: scheduled backup skipped, the world has not changed since the last backup")
 		return s.interval
 	}
 
 	info, err := s.backups.Create(ctx)
 	switch {
 	case err == nil:
-		slog.Info("scheduled backup created", "id", info.ID)
+		slog.Info("backup: scheduled backup created", "id", info.ID)
 		return s.interval
 	case errors.Is(err, ErrInProgress), errors.Is(err, ErrServerBusy):
-		slog.Info("scheduled backup postponed", "reason", err)
+		slog.Info("backup: scheduled backup postponed", "reason", err)
 		return min(busyRetry, s.interval)
 	case ctx.Err() != nil:
 		return s.interval // shutting down; run sees the cancelled context at the next wait
 	default:
 		// Create has already logged the details and published the failure event.
-		slog.Error("scheduled backup failed", "error", err)
+		slog.Error("backup: scheduled backup failed", "error", err)
 		return min(failureRetry, s.interval)
 	}
 }
@@ -169,7 +169,7 @@ func (s *Scheduler) attempt(ctx context.Context) time.Duration {
 func (s *Scheduler) worldUnchanged() bool {
 	infos, err := s.backups.List()
 	if err != nil {
-		slog.Warn("cannot read existing backups, backing up anyway", "error", err)
+		slog.Warn("backup: cannot read existing backups, backing up anyway", "error", err)
 		return false
 	}
 	if len(infos) == 0 {
@@ -178,7 +178,7 @@ func (s *Scheduler) worldUnchanged() bool {
 
 	changed, err := s.backups.changedSince(infos[0].CreatedAt)
 	if err != nil {
-		slog.Warn("cannot check the world for changes, backing up anyway", "error", err)
+		slog.Warn("backup: cannot check the world for changes, backing up anyway", "error", err)
 		return false
 	}
 	return !changed

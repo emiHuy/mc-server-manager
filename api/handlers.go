@@ -102,7 +102,7 @@ func (s *Server) handleServerCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("console command sent", "command", req.Command, "remote", r.RemoteAddr)
+	slog.Info("api: console command sent", "command", req.Command, "remote", r.RemoteAddr)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -135,7 +135,7 @@ func (s *Server) handleServerEvents(w http.ResponseWriter, r *http.Request) {
 
 	sse, err := newSSEWriter(w)
 	if err != nil {
-		slog.Warn("cannot start event stream", "error", err)
+		slog.Warn("api: cannot start event stream", "error", err)
 		return
 	}
 
@@ -169,7 +169,7 @@ func (s *Server) handleServerAutoRestart(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.restarter.SetEnabled(*req.Enabled)
-	slog.Info("auto-restart toggled", "enabled", *req.Enabled, "remote", r.RemoteAddr)
+	slog.Info("api: auto-restart toggled", "enabled", *req.Enabled, "remote", r.RemoteAddr)
 
 	writeJSON(w, http.StatusOK, newAutoRestartResponse(s.restarter.Status()))
 }
@@ -186,7 +186,7 @@ func (s *Server) handleServerConsoleStream(w http.ResponseWriter, r *http.Reques
 
 	sse, err := newSSEWriter(w)
 	if err != nil {
-		slog.Warn("cannot start console stream", "error", err)
+		slog.Warn("api: cannot start console stream", "error", err)
 		return
 	}
 
@@ -205,7 +205,7 @@ func (s *Server) handleServerMetricsStream(w http.ResponseWriter, r *http.Reques
 
 	sse, err := newSSEWriter(w)
 	if err != nil {
-		slog.Warn("cannot start metrics stream", "error", err)
+		slog.Warn("api: cannot start metrics stream", "error", err)
 		return
 	}
 
@@ -225,7 +225,7 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("backup created", "id", info.ID, "remote", r.RemoteAddr)
+	slog.Info("api: backup created", "id", info.ID, "remote", r.RemoteAddr)
 	writeJSON(w, http.StatusCreated, newBackupResponse(info))
 }
 
@@ -246,7 +246,7 @@ func (s *Server) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("backup deleted", "id", id, "remote", r.RemoteAddr)
+	slog.Info("api: backup deleted", "id", id, "remote", r.RemoteAddr)
 	w.WriteHeader(http.StatusNoContent)
 }
 

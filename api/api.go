@@ -83,7 +83,7 @@ func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecra
 }
 
 func (s *Server) Run() error {
-	slog.Info("api server listening", "addr", s.httpServer.Addr, "dashboard", dashboardURL(s.httpServer.Addr), "docs", docsURL(s.httpServer.Addr))
+	slog.Info("api: server listening", "addr", s.httpServer.Addr, "dashboard", dashboardURL(s.httpServer.Addr), "docs", docsURL(s.httpServer.Addr))
 	err := s.httpServer.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

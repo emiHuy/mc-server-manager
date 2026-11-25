@@ -58,7 +58,7 @@ func (h *Hub[T]) Publish(item T) {
 			case <-sub.ch:
 				sub.dropped++
 				if sub.dropped == 1 {
-					slog.Warn("subscriber is falling behind, dropping oldest items", "hub", h.name)
+					slog.Warn("fanout: subscriber is falling behind, dropping oldest items", "hub", h.name)
 				}
 			default:
 			}
