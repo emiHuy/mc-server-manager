@@ -59,6 +59,7 @@ body {
     display: grid;
     grid-template-columns: 208px 1fr;
     min-height: 100vh;
+    min-width: 1115px;
 }
 
 [hidden] {
@@ -114,7 +115,7 @@ button.small {
 
 .side nav button {
     all: unset;
-    box-sizing: borer-box;
+    box-sizing: border-box;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -235,12 +236,6 @@ main {
     border-color: color-mix(in srgb, var(--red), 50% var(--line));
 }
 
-.btn.danger.confirm {
-    background: var(--red);
-    border-color: var(--red);
-    color: #fff;
-}
-
 .unread {
     margin-left: 6px;
     padding: 0 6px;
@@ -302,11 +297,13 @@ main {
 
 .dot.running {
     background: var(--green);
+    animation: blink 3s ease-in-out infinite;
 }
 
 .dot.starting,
 .dot.stopping {
     background: var(--amber);
+    animation: blink 1s ease-in-out infinite;
 }
 
 .dot.crashed {
@@ -475,12 +472,6 @@ main {
 #events[data-filter="state"] .event:not([data-group="state"]),
 #events[data-filter="backups"] .event:not([data-group="backups"]) {
     display: none;
-}
-
-.tabs button.on {
-    background: var(--hover);
-    color: var(--ink);
-    font-weight: 600;
 }
 
 /* player list */
@@ -679,7 +670,6 @@ main {
     height: min(480px, 70vh);
     min-width: 340px;
     min-height: 240px;
-    resize: both;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -695,7 +685,6 @@ main {
     inset: 16px !important;
     width: auto !important;
     height: auto !important;
-    resize: none;
 }
 
 .window-resize {
@@ -716,12 +705,12 @@ main {
             transparent 74%);
 }
 
-.window.max .console-resize {
+.window.max .window-resize {
     display: none;
 }
 
 @media (max-width: 780px) {
-    .console-resize {
+    .window-resize {
         display: none;
     }
 }
@@ -748,10 +737,11 @@ main {
     flex: 1;
 }
 
-.window-bar .sub {
+.window-bar .window-sub {
     font-family: "IBM Plex Mono", monospace;
     font-size: 11.5px;
     color: #8f9aa1;
+    margin-top: 2px;
 }
 
 .window-bar .dot {
@@ -766,6 +756,10 @@ main {
 .window-bar .dot.starting,
 .window-bar .dot.stopping {
     background: #e0aa4a;
+}
+
+.window-bar .dot.crashed {
+    background: #ef6c5e;
 }
 
 .window-bar button {
@@ -796,7 +790,7 @@ main {
     color: #e0b45a;
 }
 
-.log .err {
+.log .error {
     color: #f08577;
 }
 
@@ -936,7 +930,7 @@ main {
     font-size: 13px;
 }
 
-@media(max-width:700px) {
+@media(max-width:780px) {
     .window {
         left: 0 !important;
         right: 0 !important;
@@ -944,7 +938,6 @@ main {
         bottom: 0 !important;
         width: 100% !important;
         height: 75vh !important;
-        resize: none;
         border-radius: 12px 12px 0 0;
     }
 
