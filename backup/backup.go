@@ -25,7 +25,10 @@ import (
 var (
 	ErrFlushTimeout  = errors.New("backup: timed out waiting for world save")
 	errConsoleClosed = errors.New("backup: console stream closed")
+	idPattern        = regexp.MustCompile(`^backup-\d{8}-\d{6}$`)
 )
+
+const idTimeLayout = "20060102-150405"
 
 type Controller interface {
 	Send(cmd string) error
@@ -37,7 +40,7 @@ type Controller interface {
 type Manager struct {
 	ctl       Controller
 	sourceDir string
-	conf      config.BackupConfig
+	cfg       config.BackupConfig
 	mu        sync.Mutex
 }
 
@@ -47,12 +50,8 @@ type Info struct {
 	SizeBytes int64
 }
 
-const idTimeLayout = "20060102-150405"
-
-var idPattern = regexp.MustCompile(`^backup-\d{8}-\d{6}$`)
-
-func New(ctl Controller, sourceDir string, conf config.BackupConfig) *Manager {
-	return &Manager{ctl: ctl, sourceDir: sourceDir, conf: conf}
+func New(ctl Controller, sourceDir string, cfg config.BackupConfig) *Manager {
+	return &Manager{ctl: ctl, sourceDir: sourceDir, cfg: cfg}
 }
 
 func (m *Manager) Create(ctx context.Context) (Info, error) {
@@ -68,8 +67,6 @@ func (m *Manager) Create(ctx context.Context) (Info, error) {
 	id := newID(time.Now())
 	m.publish(minecraft.EventBackupStarted, id, "")
 
-	// The flush happens in its own function so its deferred save-on
-	// runs as soon as the files are safe, before retention.
 	info, err := m.createLocked(ctx, id)
 	if err != nil {
 		slog.Error("backup failed", "id", id, "error", err)
@@ -80,8 +77,74 @@ func (m *Manager) Create(ctx context.Context) (Info, error) {
 	if err := m.enforceRetention(); err != nil {
 		slog.Warn("backup retention failed", "error", err) // the backup itself succeeded
 	}
+
 	m.publish(minecraft.EventBackupCompleted, id, "")
 	return info, nil
+}
+
+func (m *Manager) List() ([]Info, error) {
+	entries, err := os.ReadDir(m.cfg.Directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var infos []Info
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), ".zip")
+		if e.IsDir() || !ok || !idPattern.MatchString(id) {
+			continue
+		}
+
+		created, err := parseID(id)
+		if err != nil {
+			continue
+		}
+
+		fileInfo, err := e.Info()
+		if err != nil {
+			continue
+		}
+
+		infos = append(infos, Info{ID: id, CreatedAt: created, SizeBytes: fileInfo.Size()})
+	}
+
+	slices.SortFunc(infos, func(a, b Info) int {
+		return strings.Compare(b.ID, a.ID) // newest first
+	})
+
+	return infos, nil
+}
+
+func (m *Manager) Delete(id string) error {
+	if !idPattern.MatchString(id) {
+		return ErrInvalidID
+	}
+
+	err := os.Remove(m.path(id))
+	if errors.Is(err, fs.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+// BackupExists returns the zip path for id, or an error if it is invalid or missing.
+func (m *Manager) BackupExists(id string) (string, error) {
+	path := m.path(id)
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", ErrNotFound
+	}
+
+	return path, nil
 }
 
 func (m *Manager) createLocked(ctx context.Context, id string) (Info, error) {
@@ -101,7 +164,7 @@ func (m *Manager) createLocked(ctx context.Context, id string) (Info, error) {
 		if err := m.ctl.Send("save-all flush"); err != nil {
 			return Info{}, err
 		}
-		if err := waitFor(ctx, sub, "Saved the game", m.conf.FlushTimeout); err != nil {
+		if err := waitFor(ctx, sub, "Saved the game", m.cfg.FlushTimeout); err != nil {
 			return Info{}, err
 		}
 	}
@@ -109,57 +172,11 @@ func (m *Manager) createLocked(ctx context.Context, id string) (Info, error) {
 	return m.archive(id) // runs while autosave is off; save-on fires when this returns
 }
 
-func (m *Manager) List() ([]Info, error) {
-	entries, err := os.ReadDir(m.conf.Directory)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var infos []Info
-	for _, e := range entries {
-		id, ok := strings.CutSuffix(e.Name(), ".zip")
-		if e.IsDir() || !ok || !idPattern.MatchString(id) {
-			continue // skips .tmp files and anything stray
-		}
-
-		created, err := parseID(id)
-		if err != nil {
-			continue
-		}
-
-		fileInfo, err := e.Info()
-		if err != nil {
-			continue // deleted between ReadDir and Info
-		}
-
-		infos = append(infos, Info{ID: id, CreatedAt: created, SizeBytes: fileInfo.Size()})
-	}
-
-	slices.SortFunc(infos, func(a, b Info) int {
-		return strings.Compare(b.ID, a.ID) // newest first
-	})
-	return infos, nil
-}
-
-func (m *Manager) Delete(id string) error {
-	if !idPattern.MatchString(id) {
-		return ErrInvalidID
-	}
-
-	err := os.Remove(m.path(id))
-	if errors.Is(err, fs.ErrNotExist) {
-		return ErrNotFound
-	}
-	return err
-}
-
 // archive zips the world folder into <id>.zip in the backup directory.
+//
 // It writes to a .tmp file first so a crash never leaves a half-written .zip.
 func (m *Manager) archive(id string) (Info, error) {
-	if err := os.MkdirAll(m.conf.Directory, 0o755); err != nil {
+	if err := os.MkdirAll(m.cfg.Directory, 0o755); err != nil {
 		return Info{}, err
 	}
 
@@ -167,13 +184,14 @@ func (m *Manager) archive(id string) (Info, error) {
 	tmp := final + ".tmp"
 
 	if _, err := os.Stat(final); err == nil {
-		return Info{}, fmt.Errorf("backup %s already exists", id) // same-second collision
+		return Info{}, fmt.Errorf("backup %s already exists", id)
 	}
 
-	if err := writeZip(tmp, m.sourceDir, m.conf.World); err != nil {
+	if err := writeZip(tmp, m.sourceDir, m.cfg.World); err != nil {
 		os.Remove(tmp)
 		return Info{}, err
 	}
+
 	if err := os.Rename(tmp, final); err != nil {
 		os.Remove(tmp)
 		return Info{}, err
@@ -183,26 +201,27 @@ func (m *Manager) archive(id string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+
 	created, _ := parseID(id) // id was just made by newID, so this can't fail
 	return Info{ID: id, CreatedAt: created, SizeBytes: fi.Size()}, nil
 }
 
-// enforceRetention deletes all but the newest conf.Keep backups.
+// enforceRetention deletes all but the newest cfg.Keep backups.
 func (m *Manager) enforceRetention() error {
-	if m.conf.Keep < 1 {
-		return nil // config validation should prevent this; never delete everything
+	if m.cfg.Keep < 1 {
+		return nil
 	}
 
 	infos, err := m.List()
 	if err != nil {
 		return err
 	}
-	if len(infos) <= m.conf.Keep {
+	if len(infos) <= m.cfg.Keep {
 		return nil
 	}
 
 	var errs []error
-	for _, info := range infos[m.conf.Keep:] {
+	for _, info := range infos[m.cfg.Keep:] {
 		if err := m.Delete(info.ID); err != nil && !errors.Is(err, ErrNotFound) {
 			errs = append(errs, err)
 		}
@@ -212,7 +231,7 @@ func (m *Manager) enforceRetention() error {
 
 // changedSince reports whether any file in the world folder was modified after t.
 func (m *Manager) changedSince(t time.Time) (bool, error) {
-	root := filepath.Join(m.sourceDir, m.conf.World)
+	root := filepath.Join(m.sourceDir, m.cfg.World)
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -223,7 +242,7 @@ func (m *Manager) changedSince(t time.Time) (bool, error) {
 		}
 		info, err := d.Info()
 		if err != nil {
-			return nil // removed while walking
+			return nil
 		}
 		if info.ModTime().After(t) {
 			return ErrChanged // stops the walk at the first newer file
@@ -233,32 +252,16 @@ func (m *Manager) changedSince(t time.Time) (bool, error) {
 	if errors.Is(err, ErrChanged) {
 		return true, nil
 	}
+
 	return false, err
 }
 
 func (m *Manager) path(id string) string {
-	return filepath.Join(m.conf.Directory, id+".zip")
+	return filepath.Join(m.cfg.Directory, id+".zip")
 }
 
 func (m *Manager) publish(t minecraft.EventType, id, message string) {
 	m.ctl.PublishEvent(minecraft.Event{Type: t, Backup: id, Message: message})
-}
-
-// BackupExists returns the zip path for id, or an error if it is invalid or missing.
-func (m *Manager) BackupExists(id string) (string, error) {
-	path := m.path(id)
-	info, err := os.Stat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", ErrNotFound
-	}
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", ErrNotFound
-	}
-
-	return path, nil
 }
 
 // waitFor blocks until a console line contains substr, the timeout passes, or ctx is done.
