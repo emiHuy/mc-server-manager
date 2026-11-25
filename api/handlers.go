@@ -107,8 +107,6 @@ func (s *Server) handleServerCommand(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerConsole(w http.ResponseWriter, r *http.Request) {
-	n := defaultConsoleLines
-
 	n, err := linesParam(r, 1)
 	if err != nil {
 		writeError(w, r, err)
