@@ -26,13 +26,6 @@ var docsFiles embed.FS
 //go:embed static
 var webFiles embed.FS
 
-type backupService interface {
-	Create(ctx context.Context) (backup.Info, error)
-	List() ([]backup.Info, error)
-	Delete(id string) error
-	BackupExists(id string) (string, error)
-}
-
 type Server struct {
 	httpServer *http.Server
 	instance   *minecraft.Instance
@@ -42,14 +35,20 @@ type Server struct {
 	token      string
 }
 
+type Option func(*Server)
+
 type methodHandler struct {
 	method  string
 	handler http.HandlerFunc
 }
 
-type Option func(*Server)
+type backupService interface {
+	Create(ctx context.Context) (backup.Info, error)
+	List() ([]backup.Info, error)
+	Delete(id string) error
+	BackupExists(id string) (string, error)
+}
 
-// nextBackupper reports when the next scheduled backup is planned.
 type nextBackupper interface {
 	NextRun() (time.Time, bool)
 }
@@ -127,7 +126,7 @@ func (s *Server) routes() *http.ServeMux {
 
 	site, err := fs.Sub(webFiles, "static")
 	if err != nil {
-		panic(err) // only fails on an invalid path; the embed itself is checked at compile time
+		panic(err)
 	}
 	mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServerFS(site)))
 	mux.Handle("GET /dashboard", http.RedirectHandler("/dashboard/", http.StatusMovedPermanently))
@@ -139,8 +138,7 @@ func (s *Server) routes() *http.ServeMux {
 	return mux
 }
 
-// handle registers handler for method and path. Any other method on the same
-// path gets a JSON 405 with an Allow header.
+// handle registers handler for method and path. Any other method on the same path gets a JSON 405 with an Allow header.
 func handle(mux *http.ServeMux, method, path string, handler http.HandlerFunc) {
 	mux.HandleFunc(method+" "+path, handler)
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -149,8 +147,7 @@ func handle(mux *http.ServeMux, method, path string, handler http.HandlerFunc) {
 	})
 }
 
-// handleMethods registers several methods on one path. Any other method gets a
-// JSON 405 whose Allow header lists every method the path supports.
+// handleMethods registers several methods on one path. Any other method gets a JSON 405 whose Allow header lists every method the path supports.
 func handleMethods(mux *http.ServeMux, path string, handlers ...methodHandler) {
 	methods := make([]string, 0, len(handlers))
 	for _, h := range handlers {
@@ -165,7 +162,6 @@ func handleMethods(mux *http.ServeMux, path string, handlers ...methodHandler) {
 	})
 }
 
-// dashboardURL turns a listen address like ":8080" or "0.0.0.0:8080" into a URL you can open in a browser.
 func dashboardURL(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {

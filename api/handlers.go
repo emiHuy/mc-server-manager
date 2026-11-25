@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultConsoleLines = 100
-	maxConsoleLines     = 1000 // the size of the console history ring
+	maxConsoleLines     = 1000
 	maxCommandBody      = 4 << 10
 	maxAutoRestartBody  = 1 << 10
 )
@@ -38,8 +38,7 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerStart(w http.ResponseWriter, r *http.Request) {
-	err := s.instance.Start()
-	if err != nil {
+	if err := s.instance.Start(); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -50,8 +49,7 @@ func (s *Server) handleServerStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerStop(w http.ResponseWriter, r *http.Request) {
-	err := s.instance.Stop()
-	if err != nil {
+	if err := s.instance.Stop(); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -62,8 +60,7 @@ func (s *Server) handleServerStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerKill(w http.ResponseWriter, r *http.Request) {
-	err := s.instance.Kill()
-	if err != nil {
+	if err := s.instance.Kill(); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -74,8 +71,7 @@ func (s *Server) handleServerKill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerRestart(w http.ResponseWriter, r *http.Request) {
-	err := s.instance.Restart()
-	if err != nil {
+	if err := s.instance.Restart(); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -95,14 +91,13 @@ func (s *Server) handleServerCommand(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxCommandBody)
 
 	var req apitypes.CommandRequest
-	err = json.UnmarshalRead(r.Body, &req)
-	if err != nil {
+
+	if err = json.UnmarshalRead(r.Body, &req); err != nil {
 		writeError(w, r, errBadRequest)
 		return
 	}
 
-	err = s.instance.Send(req.Command)
-	if err != nil {
+	if err = s.instance.Send(req.Command); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -135,9 +130,9 @@ func (s *Server) handleServerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerEvents(w http.ResponseWriter, r *http.Request) {
-	// Subscribe before reading the state, so no transition can fall between the two.
 	sub := s.instance.SubscribeEvents()
 	defer sub.Cancel()
+
 	state := s.instance.State()
 
 	sse, err := newSSEWriter(w)
@@ -168,6 +163,7 @@ func (s *Server) handleServerAutoRestart(w http.ResponseWriter, r *http.Request)
 	r.Body = http.MaxBytesReader(w, r.Body, maxAutoRestartBody)
 
 	var req apitypes.AutoRestartRequest
+
 	err = json.UnmarshalRead(r.Body, &req)
 	if err != nil || req.Enabled == nil {
 		writeError(w, r, errBadRequest)
@@ -181,7 +177,6 @@ func (s *Server) handleServerAutoRestart(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleServerConsoleStream(w http.ResponseWriter, r *http.Request) {
-	// Validate before the headers go out, so a bad request still gets a JSON 400.
 	n, err := linesParam(r, 1)
 	if err != nil {
 		writeError(w, r, err)
@@ -223,18 +218,6 @@ func (s *Server) handleServerMetricsStream(w http.ResponseWriter, r *http.Reques
 	}
 
 	serveStream(r.Context(), sse, sub.C, newMetricsResponse)
-}
-
-func linesParam(r *http.Request, min int) (int, error) {
-	v := r.URL.Query().Get("lines")
-	if v == "" {
-		return defaultConsoleLines, nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < min || n > maxConsoleLines {
-		return 0, errInvalidLines
-	}
-	return n, nil
 }
 
 func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
@@ -280,4 +263,16 @@ func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.zip"`)
 	http.ServeFile(w, r, path)
+}
+
+func linesParam(r *http.Request, min int) (int, error) {
+	v := r.URL.Query().Get("lines")
+	if v == "" {
+		return defaultConsoleLines, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < min || n > maxConsoleLines {
+		return 0, errInvalidLines
+	}
+	return n, nil
 }

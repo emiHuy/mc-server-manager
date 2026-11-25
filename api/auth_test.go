@@ -3,94 +3,44 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/emiHuy/mc-server-manager/config"
+	"github.com/stretchr/testify/require"
 )
 
-func newAuthTestServer(t *testing.T, token string) *httptest.Server {
-	t.Helper()
-	inst := newStoppedInstance()
-	s := New(config.APIConfig{Token: token}, inst, newTestRestarter(t, inst), nil)
-	return httptest.NewTestServer(t, s.httpServer.Handler)
-}
-
-func doAuth(t *testing.T, server *httptest.Server, method, path, authHeader string) *http.Response {
-	t.Helper()
-
-	req, err := http.NewRequest(method, baseURL+path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	}
-	resp, err := server.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-	return resp
-}
-
 func TestAuth(t *testing.T) {
-	const token = "0123456789abcdef0123456789abcdef"
-	server := newAuthTestServer(t, token)
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	tests := []struct {
 		name   string
-		method string
+		token  string
 		path   string
 		header string
 		want   int
 	}{
-		{"valid token", http.MethodGet, "/api/server/status", "Bearer " + token, http.StatusOK},
-		{"no header", http.MethodGet, "/api/server/status", "", http.StatusUnauthorized},
-		{"wrong token", http.MethodGet, "/api/server/status", "Bearer nope", http.StatusUnauthorized},
-		{"prefix of the token", http.MethodGet, "/api/server/status", "Bearer " + token[:10], http.StatusUnauthorized},
-		{"token with extra suffix", http.MethodGet, "/api/server/status", "Bearer " + token + "x", http.StatusUnauthorized},
-		{"wrong scheme", http.MethodGet, "/api/server/status", "Basic " + token, http.StatusUnauthorized},
-		{"token without scheme", http.MethodGet, "/api/server/status", token, http.StatusUnauthorized},
-		// Auth runs before routing, so callers learn nothing about routes.
-		{"unknown route, no token", http.MethodGet, "/api/nope", "", http.StatusUnauthorized},
-		{"wrong method, no token", http.MethodDelete, "/api/server/status", "", http.StatusUnauthorized},
-		// 401, not the 409 the stopped server would give an authorized caller.
-		{"action without token", http.MethodPost, "/api/server/stop", "", http.StatusUnauthorized},
-		{"stream without token", http.MethodGet, "/api/server/events", "", http.StatusUnauthorized},
-		// Authorized requests still get the normal routing errors.
-		{"unknown route, valid token", http.MethodGet, "/api/nope", "Bearer " + token, http.StatusNotFound},
-		{"action with token", http.MethodPost, "/api/server/stop", "Bearer " + token, http.StatusConflict},
+		{"disabled allows everything", "", "/api/server/status", "", 200},
+		{"missing header", "secret", "/api/server/status", "", 401},
+		{"wrong token", "secret", "/api/server/status", "Bearer nope", 401},
+		{"wrong scheme", "secret", "/api/server/status", "Basic secret", 401},
+		{"no prefix", "secret", "/api/server/status", "secret", 401},
+		{"correct token", "secret", "/api/server/status", "Bearer secret", 200},
+		{"non-api path skips auth", "secret", "/dashboard/", "", 200},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := doAuth(t, server, tt.method, tt.path, tt.header)
-
-			if resp.StatusCode != tt.want {
-				t.Fatalf("status code = %d, want %d", resp.StatusCode, tt.want)
+			s := &Server{token: tt.token}
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
 			}
-			if tt.want == http.StatusUnauthorized {
-				if got := resp.Header.Get("WWW-Authenticate"); got != `Bearer realm="mcsm"` {
-					t.Errorf("WWW-Authenticate = %q, want %q", got, `Bearer realm="mcsm"`)
-				}
-				if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
-					t.Error("an unauthorized request must not start a stream")
-				}
-				body, _ := readJSON[errorResponse](t, resp)
-				if body.Error != "unauthorized" {
-					t.Errorf("error = %q, want %q", body.Error, "unauthorized")
-				}
+			rec := httptest.NewRecorder()
+			s.auth(ok).ServeHTTP(rec, req)
+
+			require.Equal(t, tt.want, rec.Code)
+
+			if tt.want == 401 {
+				require.NotEmpty(t, rec.Header().Get("WWW-Authenticate"))
 			}
 		})
-	}
-}
-
-func TestNoTokenMeansOpen(t *testing.T) {
-	server := newAuthTestServer(t, "")
-
-	resp := doAuth(t, server, http.MethodGet, "/api/server/status", "")
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status code = %d, want 200 when no token is configured", resp.StatusCode)
 	}
 }

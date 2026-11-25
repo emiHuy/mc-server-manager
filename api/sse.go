@@ -36,7 +36,6 @@ func newSSEWriter(w http.ResponseWriter) (*sseWriter, error) {
 }
 
 // send writes v as one message.
-// json.Marshal output has no raw newlines, so a single data line is always valid.
 func (s *sseWriter) send(v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -52,7 +51,6 @@ func (s *sseWriter) comment(text string) error {
 }
 
 func (s *sseWriter) write(msg string) error {
-	// Bound each write: a client that stops reading must not pin this goroutine and its subscription forever.
 	_ = s.rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 
 	if _, err := io.WriteString(s.w, msg); err != nil {
