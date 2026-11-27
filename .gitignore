@@ -5,3 +5,5 @@ mcsm.exe
 
 backups/
 mcsm.pid
+
+vendor/

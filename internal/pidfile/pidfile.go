@@ -21,23 +21,22 @@ func Write(path string, info Info) error {
 	if err != nil {
 		return fmt.Errorf("cannot encode pidfile: %w", err)
 	}
-	err = os.WriteFile(path, data, 0o644)
-	if err != nil {
+	if err = os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("cannot write pidfile: %w", err)
 	}
 	return nil
 }
 
-// Read loads the pidfile at path. A missing file returns an error that
-// satisfies errors.Is(err, os.ErrNotExist).
+// Read loads the pidfile at path.
+//
+// A missing file returns an error that satisfies errors.Is(err, os.ErrNotExist).
 func Read(path string) (Info, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Info{}, err
 	}
 	var info Info
-	err = json.Unmarshal(data, &info)
-	if err != nil {
+	if err = json.Unmarshal(data, &info); err != nil {
 		return Info{}, fmt.Errorf("cannot parse pidfile %s: %w", path, err)
 	}
 	if info.PID <= 0 {
@@ -48,8 +47,7 @@ func Read(path string) (Info, error) {
 
 // Remove deletes the pidfile. A missing file is not an error.
 func Remove(path string) error {
-	err := os.Remove(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

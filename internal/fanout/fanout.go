@@ -6,23 +6,21 @@ import (
 	"sync"
 )
 
-// Hub distributes published items to subscribers and optionally retains
-// a bounded history of recent items.
+// Hub fans out items to active subscribers and optionally retains recent history.
 //
-// A Hub is safe for concurrent use.
+// It is safe for concurrent use.
 type Hub[T any] struct {
 	name     string
 	capacity int
 
-	mu      sync.Mutex // guards subs, subscriber drop counts, and history
+	mu      sync.Mutex
 	subs    map[*Subscription[T]]struct{}
 	history *ring[T]
 }
 
-// New creates a Hub with the given name, subscriber channel capacity, and history capacity.
+// New returns a Hub with the given name, per-subscriber buffer capacity, and history size.
 //
-// A capacity less than one is treated as one. History is disabled when
-// history is less than one.
+// Values less than 1 normalize capacity to 1 and disable history.
 func New[T any](name string, capacity int, history int) *Hub[T] {
 	if capacity < 1 {
 		capacity = 1
@@ -40,7 +38,7 @@ func New[T any](name string, capacity int, history int) *Hub[T] {
 	return h
 }
 
-// Publish sends item to every current subscriber and adds it to history when history is enabled.
+// Publish sends item to all subscribers without blocking.
 //
 // If a subscriber's channel is full, the oldest queued item is discarded to make room for the new item.
 // Publishing does not wait for subscribers to consume items.
@@ -60,7 +58,7 @@ func (h *Hub[T]) Publish(item T) {
 			case <-sub.ch:
 				sub.dropped++
 				if sub.dropped == 1 {
-					slog.Warn("subscriber is falling behind, dropping oldest items", "hub", h.name)
+					slog.Warn("fanout: subscriber is falling behind, dropping oldest items", "hub", h.name)
 				}
 			default:
 			}
@@ -69,10 +67,9 @@ func (h *Hub[T]) Publish(item T) {
 	}
 }
 
-// Subscribe registers a new subscriber and returns the most recent n historical items along with the subscription.
+// Subscribe registers a subscriber and returns a snapshot of up to n recent items alongside the subscription.
 //
-// The returned history is a snapshot taken while registering the subscriber.
-// Historical items are not automatically sent through the subscription channel.
+// Historical items are not sent on the channel.
 func (h *Hub[T]) Subscribe(n int) ([]T, *Subscription[T]) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

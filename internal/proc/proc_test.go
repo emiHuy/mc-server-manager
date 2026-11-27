@@ -1,24 +1,20 @@
 package proc
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestLookupDeadProcess(t *testing.T) {
 	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	cmd := exec.Command(exe, "-test.run=^$")
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cmd.Run())
 
 	_, err = Lookup(cmd.Process.Pid)
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("Lookup() error = %v, want ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, ErrNotFound)
 }

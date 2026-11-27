@@ -56,7 +56,7 @@ func serverAddrFromProperties(dir string) (string, int, error) {
 			}
 			p, err := strconv.Atoi(strings.TrimSpace(value))
 			if err != nil || p < 1 || p > 65535 {
-				return "", 0, fmt.Errorf("invalid server-port %d in server.properties", p)
+				return "", 0, fmt.Errorf("invalid server-port %q in server.properties", value)
 			}
 			port = p
 		}

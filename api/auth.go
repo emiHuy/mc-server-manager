@@ -25,7 +25,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		sum := sha256.Sum256([]byte(got))
 
 		if !ok || subtle.ConstantTimeCompare(sum[:], want[:]) != 1 {
-			slog.Warn("unauthorized request", "path", r.URL.Path, "remote", r.RemoteAddr)
+			slog.Warn("api: unauthorized request", "path", r.URL.Path, "remote", r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="mcsm"`)
 			writeError(w, r, errUnauthorized)
 			return

@@ -3,6 +3,8 @@ package minecraft
 import (
 	"encoding/json/v2"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestStateString(t *testing.T) {
@@ -21,9 +23,7 @@ func TestStateString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			if got := tt.state.String(); got != tt.want {
-				t.Errorf("State(%d).String() = %q, want %q", int(tt.state), got, tt.want)
-			}
+			require.Equal(t, tt.want, tt.state.String())
 		})
 	}
 }
@@ -33,12 +33,11 @@ func TestStateNamesAreComplete(t *testing.T) {
 
 	for s := StateStopped; s <= StateCrashed; s++ {
 		name := s.String()
-		if name == "unknown" {
-			t.Errorf("State(%d) has no name", int(s))
-		}
-		if other, dup := seen[name]; dup {
-			t.Errorf("States %d and %d share the name %q", int(other), int(s), name)
-		}
+		require.NotEqual(t, "unknown", name)
+
+		_, dup := seen[name]
+		require.False(t, dup)
+
 		seen[name] = s
 	}
 }
@@ -57,9 +56,7 @@ func TestStateLive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.state.String(), func(t *testing.T) {
-			if got := tt.state.live(); got != tt.want {
-				t.Errorf("%v.live() = %v, want %v", tt.state, got, tt.want)
-			}
+			require.Equal(t, tt.want, tt.state.live())
 		})
 	}
 }
@@ -67,26 +64,19 @@ func TestStateLive(t *testing.T) {
 func TestStateJSONRoundTrip(t *testing.T) {
 	for _, want := range []State{StateStopped, StateStarting, StateRunning, StateStopping, StateCrashed} {
 		data, err := json.Marshal(want)
-		if err != nil {
-			t.Fatalf("marshal %v: %v", want, err)
-		}
-		if string(data) != `"`+want.String()+`"` {
-			t.Fatalf("marshal %v = %s, want a quoted string", want, data)
-		}
+		require.NoError(t, err)
+		require.Equal(t, `"`+want.String()+`"`, string(data))
 
 		var got State
-		if err := json.Unmarshal(data, &got); err != nil {
-			t.Fatalf("unmarshal %s: %v", data, err)
-		}
-		if got != want {
-			t.Fatalf("round trip: got %v, want %v", got, want)
-		}
+		err = json.Unmarshal(data, &got)
+		require.NoError(t, err)
+
+		require.Equal(t, want, got)
 	}
 }
 
 func TestStateUnmarshalUnknown(t *testing.T) {
 	var s State
-	if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
-		t.Fatal("expected an error for an unknown state")
-	}
+	err := json.Unmarshal([]byte(`"bogus"`), &s)
+	require.Error(t, err)
 }

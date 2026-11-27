@@ -1,5 +1,4 @@
 // Package minecraft manages a Minecraft server process.
-// This includes starting and stopping the server, sending console commands, tracking players, publishing events, and collecting metrics.
 package minecraft
 
 import (
@@ -11,57 +10,39 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/emiHuy/mc-server-manager/config"
 	"github.com/emiHuy/mc-server-manager/internal/fanout"
-	"github.com/emiHuy/mc-server-manager/internal/pidfile"
 	"github.com/emiHuy/mc-server-manager/internal/portcheck"
-	"github.com/emiHuy/mc-server-manager/internal/proc"
 	"github.com/emiHuy/mc-server-manager/internal/sysmetrics"
 )
 
 const (
-	killTimeout               = 5 * time.Second        // wait for the exit after killing the process
-	consoleDoneWait           = 2 * time.Second        // wait for console output to drain after the process exits
-	metricsSampleWindow       = 250 * time.Millisecond // how long Metrics samples CPU
-	defaultMetricsInterval    = 3 * time.Second
-	maxLines                  = 1000 // console lines kept as history
+	killTimeout        = 5 * time.Second
+	consoleDoneTimeout = 2 * time.Second
+
+	maxLines = 1000 // console lines kept as history
+
 	consoleSubscriberCapacity = 64
 	eventSubscriberCapacity   = 64
-	metricsSubscriberCapacity = 4
-
-	pidfileName         = "mcsm.pid"
-	staleStartTolerance = 5 * time.Second
-
-	maxCommandLength = 1000 // bytes
 )
 
 // Instance manages one Minecraft server process.
-// Publishing to the hubs while holding mu is safe because they never call back into Instance.
 type Instance struct {
-	// The hubs and the player set lock themselves.
-	conf    config.MinecraftConfig
+	// The hubs, the player set and the sampler lock themselves, so they are safe to use with mu held.
+	cfg     config.MinecraftConfig
 	console *fanout.Hub[string]
 	events  *fanout.Hub[Event]
 	players *playerSet
-
-	metrics         *fanout.Hub[Metrics]
-	metricsInterval time.Duration
+	sampler *metricsSampler
 
 	// writeMu serializes writes to stdin so concurrent commands cannot interleave.
-	// Lock order: mu before writeMu, never the reverse.
+	// Lock order: mu before writeMu.
 	writeMu sync.Mutex
-	// samplerMu guards samplerRunning.
-	// It is held only around subscribing and the subscriber check, never while taking mu.
-	samplerMu      sync.Mutex
-	samplerRunning bool
 
 	// mu guards every field below it.
 	mu           sync.Mutex
@@ -73,23 +54,7 @@ type Instance struct {
 	startupTimer *time.Timer
 	onCrash      func(ranFor time.Duration)
 
-	restartMu sync.Mutex // serialize Restart calls
-}
-
-type Metrics struct {
-	State         State
-	Uptime        time.Duration
-	PlayersOnline int
-
-	CPUPercent        float64 // per core
-	CPUMachinePercent float64
-	CPUCores          int
-
-	MemoryBytes uint64
-
-	DiskUsedBytes  uint64
-	DiskFreeBytes  uint64
-	DiskTotalBytes uint64
+	restartMu sync.Mutex // serializes Restart calls
 }
 
 type Status struct {
@@ -98,55 +63,24 @@ type Status struct {
 	Players []string
 }
 
-func New(conf config.MinecraftConfig) *Instance {
-	return &Instance{
+func New(cfg config.MinecraftConfig) *Instance {
+	inst := &Instance{
 		state: StateStopped,
 
-		conf: conf,
+		cfg: cfg,
 
 		console: fanout.New[string]("console", consoleSubscriberCapacity, maxLines),
 		events:  fanout.New[Event]("events", eventSubscriberCapacity, 0),
 		players: newPlayerSet(),
-
-		metrics:         fanout.New[Metrics]("metrics", metricsSubscriberCapacity, 1),
-		metricsInterval: defaultMetricsInterval,
 	}
+	inst.sampler = newMetricsSampler(defaultMetricsInterval, inst.collect)
+
+	return inst
 }
 
 // CheckStale refuses if the pidfile points at a live Java process.
-// A pidfile that is unreadable, or that points at a dead or unrelated process, is a leftover and is removed.
 func (inst *Instance) CheckStale() error {
-	path := inst.pidfilePath()
-
-	info, err := pidfile.Read(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		slog.Warn("removing unreadable pidfile", "path", path, "error", err)
-		inst.removePidfile()
-		return nil
-	}
-
-	p, err := proc.Lookup(info.PID)
-	if errors.Is(err, proc.ErrNotFound) {
-		slog.Info("removing stale pidfile, process is gone", "pid", info.PID)
-		inst.removePidfile()
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("cannot check whether minecraft server (pid %d) is still running: %w", info.PID, err)
-	}
-
-	// The real server started before the pidfile was written. A process that
-	// started later is an unrelated one that reused the PID.
-	if !looksLikeJava(p.Name) || p.StartedAt.After(info.StartedAt.Add(staleStartTolerance)) {
-		slog.Info("removing stale pidfile, pid belongs to another process", "pid", info.PID, "name", p.Name)
-		inst.removePidfile()
-		return nil
-	}
-
-	return fmt.Errorf("a minecraft server is already running (pid %d, started %s); stop it or delete %s if it is not one", info.PID, info.StartedAt.Format(time.RFC3339), path)
+	return checkStale(inst.cfg.Directory)
 }
 
 // Start launches the server process and returns without waiting for the world to load.
@@ -159,26 +93,25 @@ func (inst *Instance) Start() error {
 		return fmt.Errorf("cannot start minecraft server when instance is %w: %s", ErrInvalidState, inst.state)
 	}
 
-	err := inst.preflight()
-	if err != nil {
+	if err := inst.preflight(); err != nil {
 		return err
 	}
 
 	inst.setStateLocked(StateStarting)
-	slog.Info("minecraft server starting", "state", StateStarting)
+	slog.Info("minecraft: server starting", "state", StateStarting)
 
 	args := []string{
-		"-Xms" + inst.conf.MinMemory,
-		"-Xmx" + inst.conf.MaxMemory,
+		"-Xms" + inst.cfg.MinMemory,
+		"-Xmx" + inst.cfg.MaxMemory,
 		"-jar",
-		inst.conf.JarFile,
+		inst.cfg.JarFile,
 	}
-	if !inst.conf.Gui {
+	if !inst.cfg.Gui {
 		args = append(args, "nogui")
 	}
 
-	cmd := exec.Command(inst.conf.Command, args...)
-	cmd.Dir = inst.conf.Directory
+	cmd := exec.Command(inst.cfg.Command, args...)
+	cmd.Dir = inst.cfg.Directory
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -197,15 +130,14 @@ func (inst *Instance) Start() error {
 
 	detachFromConsole(cmd)
 
-	err = cmd.Start()
-	if err != nil {
+	if err = cmd.Start(); err != nil {
 		inst.setStateLocked(StateStopped)
 		writer.Close()
 		reader.Close()
 		return fmt.Errorf("cannot start minecraft server: %w", err)
 	}
 
-	inst.writePidfile(cmd.Process.Pid)
+	writePidfile(inst.cfg.Directory, cmd.Process.Pid)
 
 	writer.Close()
 	consoleDone := make(chan struct{})
@@ -218,8 +150,9 @@ func (inst *Instance) Start() error {
 	exited := make(chan struct{})
 	inst.exited = exited
 
-	timeout := inst.conf.StartupTimeout
+	timeout := inst.cfg.StartupTimeout
 
+	// Kill a server that never reports ready. watch then marks it crashed.
 	inst.startupTimer = time.AfterFunc(timeout, func() {
 		inst.mu.Lock()
 		defer inst.mu.Unlock()
@@ -227,10 +160,10 @@ func (inst *Instance) Start() error {
 		if inst.state != StateStarting || inst.cmd != cmd {
 			return
 		}
-		slog.Warn("minecraft server did not become ready in time, killing process", "timeout", timeout.String())
-		err := cmd.Process.Kill()
-		if err != nil && !errors.Is(err, os.ErrProcessDone) {
-			slog.Error("cannot kill minecraft server after startup timed out", "error", err)
+		slog.Warn("minecraft: server did not become ready in time, killing process", "timeout", timeout.String())
+
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			slog.Error("minecraft: cannot kill server after startup timed out", "error", err)
 		}
 	})
 
@@ -253,8 +186,9 @@ func (inst *Instance) RequestStop() error {
 	inst.setStateLocked(StateStopping)
 	inst.mu.Unlock()
 
-	err := inst.writeCommand(stdin, "stop")
-	if err != nil {
+	// Write outside mu so a blocked stdin write cannot stall everything else that needs it.
+	if err := inst.writeCommand(stdin, "stop"); err != nil {
+		// Undo the state change.
 		inst.mu.Lock()
 		if inst.state == StateStopping {
 			inst.setStateLocked(prev)
@@ -265,11 +199,10 @@ func (inst *Instance) RequestStop() error {
 	return nil
 }
 
-// Stop calls RequestStop and then blocks to wait for the server process to exit
+// Stop requests a stop and blocks until the process exits.
 // If it does not exit within StopTimeout, the process is killed.
 func (inst *Instance) Stop() error {
-	err := inst.RequestStop()
-	if err != nil {
+	if err := inst.RequestStop(); err != nil {
 		return err
 	}
 
@@ -282,15 +215,14 @@ func (inst *Instance) Stop() error {
 		return nil
 	}
 
-	slog.Info("minecraft server stopping", "state", StateStopping)
+	slog.Info("minecraft: server stopping", "state", StateStopping)
 
 	select {
 	case <-exited:
 		return nil
-	case <-time.After(inst.conf.StopTimeout):
-		slog.Warn("minecraft server did not stop in time, killing process", "timeout", inst.conf.StopTimeout.String())
-		err = cmd.Process.Kill()
-		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+	case <-time.After(inst.cfg.StopTimeout):
+		slog.Warn("minecraft: server did not stop in time, killing process", "timeout", inst.cfg.StopTimeout.String())
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return fmt.Errorf("cannot kill minecraft server after stop timed out: %w", err)
 		}
 	}
@@ -319,8 +251,7 @@ func (inst *Instance) Kill() error {
 		stateChanged = true
 	}
 
-	err := inst.cmd.Process.Kill()
-	if err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := inst.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		if stateChanged {
 			inst.setStateLocked(prev)
 		}
@@ -342,18 +273,16 @@ func (inst *Instance) Restart() error {
 
 	switch {
 	case state.live():
-		err := inst.Stop()
-		if err != nil && !errors.Is(err, ErrInvalidState) {
+		if err := inst.Stop(); err != nil && !errors.Is(err, ErrInvalidState) {
 			return fmt.Errorf("cannot restart minecraft server: %w", err)
 		}
 	case state == StateStopped || state == StateCrashed:
-		// do nothing
+		// nothing to stop
 	default:
 		return fmt.Errorf("cannot restart minecraft server: %w: %s", ErrInvalidState, state)
 	}
 
-	err := inst.Start()
-	if err != nil {
+	if err := inst.Start(); err != nil {
 		return fmt.Errorf("cannot restart minecraft server: %w", err)
 	}
 	return nil
@@ -392,30 +321,14 @@ func (inst *Instance) Send(command string) error {
 	return inst.writeCommand(stdin, cmd)
 }
 
-// RecentConsole return the n most recent console lines.
-func (inst *Instance) RecentConsole(n int) []string {
-	return inst.console.Recent(n)
+// State reads the instance state under its lock.
+func (inst *Instance) State() State {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	return inst.state
 }
 
-// Players returns a list of online player names.
-func (inst *Instance) Players() []string {
-	return inst.players.list()
-}
-
-// Metrics reports process and disk statistics.
-// The process fields are zero when no process is running.
-// It blocks for metricsSampleWindow while sampling CPU.
-func (inst *Instance) Metrics() (Metrics, error) {
-	return inst.collect(func(pid int32) (float64, uint64, error) {
-		sampler, err := sysmetrics.NewSampler(pid)
-		if err != nil {
-			return 0, 0, err
-		}
-		return sampler.Sample(metricsSampleWindow)
-	})
-}
-
-// Status returns the server status. Includes state, uptime, and online players.
+// Status returns the state, uptime and online players.
 func (inst *Instance) Status() Status {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -429,11 +342,21 @@ func (inst *Instance) Status() Status {
 	return Status{State: state, Uptime: uptime, Players: inst.Players()}
 }
 
-// State reads the instance state under its lock.
-func (inst *Instance) State() State {
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	return inst.state
+// Players returns a list of online player names.
+func (inst *Instance) Players() []string {
+	return inst.players.list()
+}
+
+// RecentConsole return the n most recent console lines.
+func (inst *Instance) RecentConsole(n int) []string {
+	return inst.console.Recent(n)
+}
+
+// Metrics reports process and disk statistics.
+// The process fields are zero when no process is running.
+// It blocks for metricsSampleWindow while sampling CPU.
+func (inst *Instance) Metrics() (Metrics, error) {
+	return inst.collect(sampleOnce)
 }
 
 // SubscribeConsole returns up to n recent console lines and a subscription to new ones.
@@ -453,29 +376,18 @@ func (inst *Instance) SubscribeEvents() *fanout.Subscription[Event] {
 // Sampling runs only while a subscription exists.
 // Callers must call Cancel on the subscription when done.
 func (inst *Instance) SubscribeMetrics() ([]Metrics, *fanout.Subscription[Metrics]) {
-	inst.samplerMu.Lock()
-	defer inst.samplerMu.Unlock()
-
-	wasRunning := inst.samplerRunning
-	latest, sub := inst.metrics.Subscribe(1)
-
-	if !wasRunning {
-		// The history is from the last time anyone was watching, so it is stale.
-		latest = nil
-		inst.samplerRunning = true
-		go inst.sampleLoop()
-	}
-
-	return latest, sub
+	return inst.sampler.subscribe()
 }
 
+// SetOnCrash sets a hook that runs when the server crashes or exits before becoming ready.
+// The hook runs on the watch goroutine, after mu is released.
 func (inst *Instance) SetOnCrash(f func(ranFor time.Duration)) {
 	inst.mu.Lock()
 	inst.onCrash = f
 	inst.mu.Unlock()
 }
 
-// PublishEvent publishes an event that did not come from the console, such as backup activity.
+// PublishEvent publishes an event that did not come from the console.
 // It fills in the timestamp if the caller left it empty.
 func (inst *Instance) PublishEvent(e Event) {
 	if e.Timestamp.IsZero() {
@@ -486,7 +398,7 @@ func (inst *Instance) PublishEvent(e Event) {
 
 // preflight checks if the specified server address is available for use.
 func (inst *Instance) preflight() error {
-	host, port, err := serverAddrFromProperties(inst.conf.Directory)
+	host, port, err := serverAddrFromProperties(inst.cfg.Directory)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrPreflight, err)
 	}
@@ -499,30 +411,6 @@ func (inst *Instance) preflight() error {
 	return nil
 }
 
-func (inst *Instance) pidfilePath() string {
-	return filepath.Join(inst.conf.Directory, pidfileName)
-}
-
-// writePidfile records the server's PID and start time.
-// It runs with inst.mu held, so it must not take it.
-func (inst *Instance) writePidfile(pid int) {
-	info := pidfile.Info{PID: pid, StartedAt: time.Now()}
-	if err := pidfile.Write(inst.pidfilePath(), info); err != nil {
-		slog.Warn("cannot write pidfile", "path", inst.pidfilePath(), "error", err)
-	}
-}
-
-// removePidfile deletes the pidfile. It runs with inst.mu held.
-func (inst *Instance) removePidfile() {
-	if err := pidfile.Remove(inst.pidfilePath()); err != nil {
-		slog.Warn("cannot remove pidfile", "path", inst.pidfilePath(), "error", err)
-	}
-}
-
-func looksLikeJava(name string) bool {
-	return strings.Contains(strings.ToLower(name), "java")
-}
-
 // watch is the only caller of cmd.Wait.
 // It records how the process ended and clears the per-launch fields.
 func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone chan struct{}) {
@@ -530,11 +418,10 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 
 	err := cmd.Wait()
 
-	// Let the reader finish, so the last lines are published before exited closes.
 	select {
 	case <-consoleDone:
-	case <-time.After(consoleDoneWait):
-		slog.Warn("console output did not close after exit", "timeout", consoleDoneWait.String())
+	case <-time.After(consoleDoneTimeout):
+		slog.Warn("minecraft: console output did not close after exit", "timeout", consoleDoneTimeout.String())
 	}
 
 	inst.mu.Lock()
@@ -565,7 +452,7 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 		inst.cmd = nil
 		inst.stdin = nil
 		inst.exited = nil
-		inst.removePidfile()
+		removePidfile(inst.cfg.Directory)
 	}
 
 	hook := inst.onCrash
@@ -573,17 +460,55 @@ func (inst *Instance) watch(cmd *exec.Cmd, exited chan struct{}, consoleDone cha
 
 	switch {
 	case stopRequested:
-		slog.Info("minecraft server exited", "state", StateStopped, "error", err)
+		slog.Info("minecraft: server exited", "state", StateStopped, "error", err)
 	case wasStarting:
-		slog.Error("minecraft server exited before becoming ready", "state", StateCrashed, "error", err)
+		slog.Error("minecraft: server exited before becoming ready", "state", StateCrashed, "error", err)
 	case err == nil:
-		slog.Info("minecraft server exited on its own", "state", StateStopped)
+		slog.Info("minecraft: server exited on its own", "state", StateStopped)
 	default:
-		slog.Error("minecraft server crashed", "state", StateCrashed, "error", err)
+		slog.Error("minecraft: server crashed", "state", StateCrashed, "error", err)
 	}
 
 	if crashed && hook != nil {
 		hook(ranFor)
+	}
+}
+
+// readConsole publishes each console line and acts on the events it finds.
+// It handles events inline and not through a subscription, because a subscriber can drop items and these updates must not be missed.
+func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
+	defer close(done)
+	defer r.Close()
+
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		inst.console.Publish(line)
+
+		event, ok := parseEvent(line)
+		if !ok {
+			continue
+		}
+
+		slog.Info("minecraft: publishing event", "type", event.Type, "message", event.Message)
+
+		switch event.Type {
+		case EventServerReady:
+			inst.markReady(event)
+		case EventPlayerJoined:
+			inst.players.add(event.Player)
+			inst.events.Publish(event)
+		case EventPlayerLeft:
+			inst.players.remove(event.Player)
+			inst.events.Publish(event)
+		default:
+			inst.events.Publish(event)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		slog.Warn("minecraft: console read failed", "error", err)
+		io.Copy(io.Discard, r)
 	}
 }
 
@@ -601,7 +526,7 @@ func (inst *Instance) markReady(e Event) {
 	inst.mu.Unlock()
 
 	if ready {
-		slog.Info("minecraft server ready", "state", StateRunning)
+		slog.Info("minecraft: server ready", "state", StateRunning)
 		inst.events.Publish(e)
 	}
 }
@@ -623,51 +548,12 @@ func (inst *Instance) setStateLocked(newState State) {
 	}
 
 	inst.state = newState
-	slog.Info("publishing event", "type", EventStateChanged, "new_state", newState)
+	slog.Info("minecraft: publishing event", "type", EventStateChanged, "new_state", newState)
 	inst.events.Publish(Event{Type: EventStateChanged, State: newState, Timestamp: time.Now()})
 }
 
-// readConsole publishes each console line and acts on the events it finds.
-// It handles events inline and not through a subscription, because a subscriber can drop items and these updates must not be missed.
-func (inst *Instance) readConsole(r io.ReadCloser, done chan struct{}) {
-	defer close(done)
-	defer r.Close()
-
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		inst.console.Publish(line)
-
-		event, ok := parseEvent(line)
-		if !ok {
-			continue
-		}
-
-		slog.Info("publishing event", "type", event.Type, "message", event.Message)
-
-		switch event.Type {
-		case EventServerReady:
-			inst.markReady(event)
-		case EventPlayerJoined:
-			inst.players.add(event.Player)
-			inst.events.Publish(event)
-		case EventPlayerLeft:
-			inst.players.remove(event.Player)
-			inst.events.Publish(event)
-		default:
-			inst.events.Publish(event)
-		}
-	}
-
-	err := scanner.Err()
-	if err != nil {
-		slog.Warn("console read failed", "error", err)
-		io.Copy(io.Discard, r)
-	}
-}
-
-// writeCommand writes one line to the server's stdin. It does no validation
-// and no state check; callers are responsible for both.
+// writeCommand writes one line to the server's stdin.
+// It does no validation and no state check; callers are responsible for both.
 func (inst *Instance) writeCommand(stdin io.Writer, line string) error {
 	inst.writeMu.Lock()
 	defer inst.writeMu.Unlock()
@@ -678,8 +564,9 @@ func (inst *Instance) writeCommand(stdin io.Writer, line string) error {
 	return nil
 }
 
-// collect gathers current runtime metrics for the instance.
-func (inst *Instance) collect(sample func(pid int32) (cpu float64, mem uint64, err error)) (Metrics, error) {
+// collect builds a reading, using sample for the CPU and memory of the process.
+// It copies what it needs under mu and releases it before sampling, because sampling can block.
+func (inst *Instance) collect(sample sampleFunc) (Metrics, error) {
 	inst.mu.Lock()
 	state := inst.state
 	startedAt := inst.startedAt
@@ -711,7 +598,7 @@ func (inst *Instance) collect(sample func(pid int32) (cpu float64, mem uint64, e
 		}
 	}
 
-	usage, err := sysmetrics.DiskUsage(inst.conf.Directory)
+	usage, err := sysmetrics.DiskUsage(inst.cfg.Directory)
 	if err != nil {
 		return m, err
 	}
@@ -720,62 +607,4 @@ func (inst *Instance) collect(sample func(pid int32) (cpu float64, mem uint64, e
 	m.DiskTotalBytes = usage.Total
 
 	return m, nil
-}
-
-// sampleLoop publishes a reading every metricsInterval until nobody is subscribed.
-func (inst *Instance) sampleLoop() {
-	var sampler *sysmetrics.Sampler
-	var samplerPID int32
-
-	// A new sampler measures over a short window for its first reading.
-	// After that it compares against the previous call, so it need not wait.
-	sample := func(pid int32) (float64, uint64, error) {
-		var window time.Duration
-		if sampler == nil || samplerPID != pid {
-			s, err := sysmetrics.NewSampler(pid)
-			if err != nil {
-				return 0, 0, err
-			}
-			sampler, samplerPID = s, pid
-			window = metricsSampleWindow
-		}
-		return sampler.Sample(window)
-	}
-
-	ticker := time.NewTicker(inst.metricsInterval)
-	defer ticker.Stop()
-
-	for {
-		m, err := inst.collect(sample)
-		if err != nil {
-			slog.Debug("metrics sample incomplete", "error", err)
-		}
-		inst.metrics.Publish(m)
-
-		<-ticker.C
-
-		inst.samplerMu.Lock()
-		if inst.metrics.Len() == 0 {
-			inst.samplerRunning = false
-			inst.samplerMu.Unlock()
-			return
-		}
-		inst.samplerMu.Unlock()
-	}
-}
-
-// normalizeCommand trims the command, strips one leading "/" and validates the result.
-func normalizeCommand(command string) (string, error) {
-	cmd := strings.TrimSpace(command)
-	cmd = strings.TrimSpace(strings.TrimPrefix(cmd, "/"))
-
-	switch {
-	case cmd == "":
-		return "", fmt.Errorf("%w: empty command", ErrInvalidCommand)
-	case len(cmd) > maxCommandLength:
-		return "", fmt.Errorf("%w: command longer than %d bytes", ErrInvalidCommand, maxCommandLength)
-	case strings.ContainsFunc(cmd, unicode.IsControl):
-		return "", fmt.Errorf("%w: contains control character", ErrInvalidCommand)
-	}
-	return cmd, nil
 }

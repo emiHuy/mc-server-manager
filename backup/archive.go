@@ -13,24 +13,25 @@ func writeZip(dst string, sourceDir string, world string) error {
 	if err != nil {
 		return err
 	}
-	err = zipWorld(f, sourceDir, world)
-	if err == nil {
-		err = f.Sync() // flush to disk before the rename makes it "real"
+
+	if err = zipWorld(f, sourceDir, world); err == nil {
+		err = f.Sync()
 	}
+
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
+
 	return err
 }
 
 func zipWorld(w io.Writer, sourceDir string, world string) error {
 	zw := zip.NewWriter(w)
-
 	root := filepath.Join(sourceDir, world)
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err // includes the world folder not existing
+			return err
 		}
 		if d.IsDir() || !d.Type().IsRegular() || d.Name() == "session.lock" {
 			return nil
@@ -59,6 +60,7 @@ func addFile(zw *zip.Writer, path, name string) error {
 	if err != nil {
 		return err
 	}
+
 	hdr, err := zip.FileInfoHeader(info)
 	if err != nil {
 		return err
@@ -70,6 +72,7 @@ func addFile(zw *zip.Writer, path, name string) error {
 	if err != nil {
 		return err
 	}
+
 	_, err = io.Copy(w, src)
 	return err
 }

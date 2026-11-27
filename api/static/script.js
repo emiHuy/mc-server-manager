@@ -18,7 +18,7 @@ const GROUPS = {
   server_error: "errors",
   backup_started: "backups",
   backup_completed: "backups",
-  backup_failed: "backup",
+  backup_failed: "backups",
 };
 
 const players = new Map(); // name -> start time
@@ -310,7 +310,7 @@ function resetRun() {
   $("#chat").replaceChildren();
   $("#no-chat").hidden = false;
   $("#events").replaceChildren();
-  $("#events-count").textContent = "0";
+  $("#events-count").textContent = "0 total";
 
   const empty = {
     "#uptime-value": "--:--:--",
@@ -394,11 +394,11 @@ function handleEvent(e) {
       renderBackups();
       break;
     case "backup_failed":
-      toast(`Backup ${id} failed: ${e.message}`);
+      toast(`Backup ${e.backup} failed: ${e.message}`);
   }
 
   eventsCount += 1;
-  $("#events-count").textContent = eventsCount;
+  $("#events-count").textContent = `${eventsCount} total`;
   bump(GROUPS[e.type]);
   addToLog($("#events"), eventRow(e));
 }
@@ -712,7 +712,7 @@ function setupConsoleWindow() {
     handle.addEventListener("pointerdown", (e) => {
       if (
         e.target.closest("button") ||
-        win.classList.contains("maximized") ||
+        win.classList.contains("max") ||
         matchMedia("(max-width: 780px)").matches
       ) {
         return;
@@ -769,7 +769,7 @@ function setupConsoleWindow() {
 
     if (maxed) {
       win.dataset.saved = win.getAttribute("style") ?? "";
-      consoleWin.removeAttribute("style");
+      win.removeAttribute("style");
     } else {
       win.setAttribute("style", win.dataset.saved);
     }
@@ -827,16 +827,15 @@ async function downloadBackup(id) {
     document.body.appendChild(a);
     a.click();
     a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   } catch (err) {
     toast(`Failed to download ${id}: ${err.message}`);
   }
-
-  return res;
 }
 
 async function renderBackups() {
   try {
-    data = await api("/api/backups");
+    const data = await api("/api/backups");
     backups = data.backups;
     $("#no-backups").hidden = backups.length > 0 ? true : false;
   } catch (e) {
@@ -849,13 +848,13 @@ async function renderBackups() {
   let totalSize = 0;
 
   for (const backup of backups) {
-    row = document.createElement("div");
+    const row = document.createElement("div");
     row.className = "backup-row";
 
-    infoDiv = document.createElement("div");
+    const infoDiv = document.createElement("div");
 
-    timeSpan = document.createElement("span");
-    date = new Date(backup.created_at);
+    const timeSpan = document.createElement("span");
+    const date = new Date(backup.created_at);
     const monthDay = date.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
@@ -865,28 +864,28 @@ async function renderBackups() {
     timeSpan.textContent = `${monthDay} · ${time}`;
     infoDiv.appendChild(timeSpan);
 
-    idSpan = document.createElement("span");
+    const idSpan = document.createElement("span");
     idSpan.className = "name mono";
     idSpan.textContent = `${backup.id}.zip`;
     infoDiv.appendChild(idSpan);
 
     row.appendChild(infoDiv);
 
-    sizeSpan = document.createElement("span");
+    const sizeSpan = document.createElement("span");
     sizeSpan.className = "size mono";
     sizeSpan.textContent = fmtBytes(backup.size_bytes);
     row.appendChild(sizeSpan);
 
-    toolSpan = document.createElement("span");
+    const toolSpan = document.createElement("span");
     toolSpan.className = "tools";
 
-    download = document.createElement("button");
+    const download = document.createElement("button");
     download.className = "btn small download";
     download.textContent = "Download";
     download.onclick = async () => downloadBackup(backup.id);
     toolSpan.appendChild(download);
 
-    deleteBtn = document.createElement("button");
+    const deleteBtn = document.createElement("button");
     deleteBtn.className = "btn small danger";
     deleteBtn.textContent = "Delete";
     deleteBtn.onclick = async () => deleteBackup(backup.id);

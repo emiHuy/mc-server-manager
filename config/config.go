@@ -15,27 +15,34 @@ import (
 )
 
 const (
-	minStopTimeout            = time.Second
-	defaultStopTimeout        = 30 * time.Second
-	minStartupTimeout         = 5 * time.Second
-	defaultStartupTimeout     = 2 * time.Minute
-	defaultHost               = "127.0.0.1"
-	defaultPort               = 8080
-	minTokenLength            = 16
-	placeholderToken          = "your_generated_token_here"
-	defaultMaxRestarts        = 5
-	defaultInitialBackoff     = 5 * time.Second
-	minInitialBackoff         = 1 * time.Second
-	TailscaleHost             = "tailscale"
-	minFlushTimeout           = 5 * time.Second
+	defaultHost      = "127.0.0.1"
+	defaultPort      = 8080
+	placeholderToken = "your_generated_token_here"
+	minTokenLength   = 16
+
+	defaultStopTimeout    = 30 * time.Second
+	minStopTimeout        = 1 * time.Second
+	defaultStartupTimeout = 2 * time.Minute
+	minStartupTimeout     = 5 * time.Second
+
+	defaultMaxRestarts    = 5
+	defaultInitialBackoff = 5 * time.Second
+	minInitialBackoff     = 1 * time.Second
+
 	defaultBackupDirectory    = "backups"
-	defaultBackupKeep         = 7
 	defaultBackupWorld        = "world"
 	defaultBackupFlushTimeout = 30 * time.Second
+	minBackupFlushTimeout     = 5 * time.Second
 	minBackupInterval         = 5 * time.Minute
+
+	defaultLogLevel = "info"
+
+	TailscaleHost = "tailscale"
+
+	configFile = "./config/config.toml"
 )
 
-// Config contains the application configuration.
+// Config contains the entire application configuration.
 type Config struct {
 	API         APIConfig         `toml:"api"`
 	Minecraft   MinecraftConfig   `toml:"minecraft"`
@@ -44,13 +51,14 @@ type Config struct {
 	Options     Options           `toml:"options"`
 }
 
+// APIConfig contains the configuration for the API server.
 type APIConfig struct {
 	Host  string `toml:"host"`
 	Port  int    `toml:"port"`
 	Token string `toml:"token"`
 }
 
-// MinecraftConfig contains configuration for launching and managing a Minecraft server.
+// MinecraftConfig contains the configuration for launching and managing a Minecraft server.
 type MinecraftConfig struct {
 	Directory      string        `toml:"directory"`
 	Command        string        `toml:"command"`
@@ -63,12 +71,14 @@ type MinecraftConfig struct {
 	Autostart      bool          `toml:"autostart"`
 }
 
+// AutoRestartConfig contains the configuration for minecraft server auto restarts after a crash.
 type AutoRestartConfig struct {
 	Enabled        bool          `toml:"enabled"`
 	MaxRestarts    int           `toml:"max_restarts"`
 	InitialBackoff time.Duration `toml:"initial_backoff"`
 }
 
+// BackupConfig contains the configuration for managing minecraft world backups.
 type BackupConfig struct {
 	Directory    string        `toml:"directory"`
 	Keep         int           `toml:"keep"`
@@ -82,8 +92,6 @@ type Options struct {
 	LogLevel string `toml:"log_level"`
 }
 
-const configFile = "./config/config.toml"
-
 // LoadConfig reads and validates the config file at configFile.
 func LoadConfig() (Config, error) {
 	return loadConfig(configFile)
@@ -91,55 +99,60 @@ func LoadConfig() (Config, error) {
 
 // loadConfig decodes the file at path, applies defaults, then validates.
 func loadConfig(path string) (Config, error) {
-	var conf Config
+	var cfg Config
 
-	_, err := toml.DecodeFile(path, &conf)
+	_, err := toml.DecodeFile(path, &cfg)
 	if err != nil {
-		return conf, fmt.Errorf("cannot decode config file %s: %w", path, err)
+		return cfg, fmt.Errorf("cannot decode config file %s: %w", path, err)
 	}
 
-	if conf.API.Host == "" {
-		conf.API.Host = defaultHost
-	}
-	if conf.API.Port == 0 {
-		conf.API.Port = defaultPort
-	}
-	if conf.Minecraft.StopTimeout == 0 {
-		conf.Minecraft.StopTimeout = defaultStopTimeout
-	}
-	if conf.Minecraft.StartupTimeout == 0 {
-		conf.Minecraft.StartupTimeout = defaultStartupTimeout
+	cfg.applyDefaults()
+
+	if err = cfg.validate(); err != nil {
+		return cfg, fmt.Errorf("invalid config file: %w", err)
 	}
 
-	if conf.AutoRestart.MaxRestarts == 0 {
-		conf.AutoRestart.MaxRestarts = defaultMaxRestarts
-	}
-	if conf.AutoRestart.InitialBackoff == 0 {
-		conf.AutoRestart.InitialBackoff = defaultInitialBackoff
-	}
-
-	if conf.Backup.Directory == "" {
-		conf.Backup.Directory = defaultBackupDirectory
-	}
-	if conf.Backup.Keep == 0 {
-		conf.Backup.Keep = defaultBackupKeep
-	}
-	if conf.Backup.World == "" {
-		conf.Backup.World = defaultBackupWorld
-	}
-	if conf.Backup.FlushTimeout == 0 {
-		conf.Backup.FlushTimeout = defaultBackupFlushTimeout
-	}
-
-	err = conf.validate()
-	if err != nil {
-		return conf, fmt.Errorf("invalid config file: %w", err)
-	}
-
-	return conf, nil
+	return cfg, nil
 }
 
-// validate checks that required configuration values are present and that the stop timeout meets the minimum allowed duration.
+// InitLogger configures the default slog logger to write JSON-formatted log entries to standard output using the configured minimum log level.
+func (c *Config) InitLogger() {
+	var level slog.Level
+
+	switch strings.ToLower(c.Options.LogLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	})
+	slog.SetDefault(slog.New(handler))
+}
+
+func (c *Config) applyDefaults() {
+	setDefault(&c.API.Host, defaultHost)
+	setDefault(&c.API.Port, defaultPort)
+
+	setDefault(&c.Minecraft.StopTimeout, defaultStopTimeout)
+	setDefault(&c.Minecraft.StartupTimeout, defaultStartupTimeout)
+
+	setDefault(&c.AutoRestart.MaxRestarts, defaultMaxRestarts)
+	setDefault(&c.AutoRestart.InitialBackoff, defaultInitialBackoff)
+
+	setDefault(&c.Backup.Directory, defaultBackupDirectory)
+	setDefault(&c.Backup.World, defaultBackupWorld)
+	setDefault(&c.Backup.FlushTimeout, defaultBackupFlushTimeout)
+
+	setDefault(&c.Options.LogLevel, defaultLogLevel)
+}
+
 func (c *Config) validate() error {
 	type requiredField struct {
 		key   string
@@ -165,22 +178,22 @@ func (c *Config) validate() error {
 	if len(missing) > 0 {
 		problems = append(problems, fmt.Sprintf("missing required config keys: %s", strings.Join(missing, ", ")))
 	}
+
 	if c.Minecraft.StopTimeout < minStopTimeout {
 		problems = append(problems, fmt.Sprintf("minecraft.stop_timeout must be at least %s", minStopTimeout))
 	}
 	if c.Minecraft.StartupTimeout < minStartupTimeout {
 		problems = append(problems, fmt.Sprintf("minecraft.startup_timeout must be at least %s", minStartupTimeout))
 	}
+
 	if c.API.Port < 1 || c.API.Port > 65535 {
 		problems = append(problems, "api.port must be between 1 and 65535")
 	}
-
 	if c.API.Token == "" && !isLoopbackHost(c.API.Host) {
 		problems = append(problems, fmt.Sprintf(
 			"api.token is required when api.host (%q) is not a loopback address; run `mc-server-manager token` to generate one",
 			c.API.Host))
 	}
-
 	if c.API.Token != "" {
 		switch {
 		case c.API.Token == placeholderToken:
@@ -190,39 +203,37 @@ func (c *Config) validate() error {
 		}
 	}
 
-	if c.AutoRestart.MaxRestarts < 1 {
-		problems = append(problems, "auto_restart.max_restarts must be at least 1")
+	if c.AutoRestart.MaxRestarts < 0 {
+		problems = append(problems, "auto_restart.max_restarts must be at least 0")
 	}
 	if c.AutoRestart.InitialBackoff < minInitialBackoff {
-		problems = append(problems, "auto_restart.initial_backoff must be at least 1 second")
+		problems = append(problems, fmt.Sprintf("auto_restart.initial_backoff must be at least %s second", minInitialBackoff.String()))
 	}
 
-	b := c.Backup
-
-	switch {
-	case b.Directory == "":
-		problems = append(problems, "backup.directory must not be empty")
+	if c.Backup.Keep < 0 {
+		problems = append(problems, "backup.keep must be at least 0")
 	}
-	if b.Keep < 1 {
-		problems = append(problems, "backup.keep must be at least 1")
+	if c.Backup.FlushTimeout < minBackupFlushTimeout {
+		problems = append(problems, fmt.Sprintf("backup.flush_timeout must be at least %s", minBackupFlushTimeout))
 	}
-	if b.FlushTimeout < minFlushTimeout {
-		problems = append(problems, fmt.Sprintf("backup.flush_timeout must be at least %s", minFlushTimeout))
-	}
-	if b.Interval != 0 && b.Interval < minBackupInterval {
+	if c.Backup.Interval != 0 && c.Backup.Interval < minBackupInterval {
 		problems = append(problems, fmt.Sprintf("backup.interval must be 0 (off) or at least %s", minBackupInterval))
 	}
-
-	if b.World == "" {
-		problems = append(problems, "backup.world must not be empty")
-	}
-	if b.World == "." || b.World == ".." || b.World != filepath.Base(b.World) {
+	if c.Backup.World == "." || c.Backup.World == ".." || c.Backup.World != filepath.Base(c.Backup.World) {
 		problems = append(problems, "backup.world must be a plain folder name, not a path")
 	}
+	world := filepath.Join(c.Minecraft.Directory, c.Backup.World)
+	if within(world, c.Backup.Directory) {
+		problems = append(problems, "backup.directory must not be inside the world folder")
+	}
 
-	world := filepath.Join(c.Minecraft.Directory, b.World)
-	if within(world, b.Directory) {
-		problems = append(problems, "backup.directory must not be inside the folder")
+	switch strings.ToLower(strings.TrimSpace(c.Options.LogLevel)) {
+	case "debug", "info", "warn", "error":
+	default:
+		problems = append(problems, fmt.Sprintf(
+			"options.log_level (%s) must be one of: debug, info, warn, error",
+			c.Options.LogLevel,
+		))
 	}
 
 	if len(problems) > 0 {
@@ -232,31 +243,14 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// InitLogger configures the default slog logger to write JSON-formatted log entries to standard output using the configured minimum log level.
-//
-// Unrecognized log levels default to info.
-func (c *Config) InitLogger() {
-	var level slog.Level
-
-	switch strings.ToLower(c.Options.LogLevel) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
+func setDefault[T comparable](target *T, defaultValue T) {
+	var zero T
+	if *target == zero {
+		*target = defaultValue
 	}
-
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-	})
-	slog.SetDefault(slog.New(handler))
 }
 
 // isLoopbackHost reports whether host only accepts connections from this machine.
-// An empty host counts as loopback because it defaults to 127.0.0.1.
 func isLoopbackHost(host string) bool {
 	host = strings.Trim(host, "[]")
 	if host == "" || strings.EqualFold(host, "localhost") {

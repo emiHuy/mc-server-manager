@@ -9,15 +9,6 @@ import (
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
 
-type errorResponse struct {
-	Error string `json:"error"`
-}
-
-type apiError struct {
-	status  int
-	message string
-}
-
 var (
 	errMethodNotAllowed     = &apiError{http.StatusMethodNotAllowed, "method not allowed"}
 	errNotFound             = &apiError{http.StatusNotFound, "not found"}
@@ -26,6 +17,15 @@ var (
 	errInvalidLines         = &apiError{http.StatusBadRequest, "lines must be an integer from 1 to 1000"}
 	errUnauthorized         = &apiError{http.StatusUnauthorized, "unauthorized"}
 )
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+type apiError struct {
+	status  int
+	message string
+}
 
 func (err *apiError) Error() string {
 	return err.message
@@ -37,11 +37,14 @@ func statusFor(err error) int {
 	switch {
 	case errors.As(err, &ae):
 		return ae.status
-	case errors.Is(err, minecraft.ErrInvalidState) || errors.Is(err, minecraft.ErrPreflight):
+	case errors.Is(err, minecraft.ErrInvalidState),
+		errors.Is(err, minecraft.ErrPreflight):
 		return http.StatusConflict
 	case errors.Is(err, minecraft.ErrInvalidCommand):
 		return http.StatusBadRequest
-	case errors.Is(err, backup.ErrInProgress), errors.Is(err, backup.ErrServerBusy):
+	case errors.Is(err, backup.ErrInProgress),
+		errors.Is(err, backup.ErrServerBusy),
+		errors.Is(err, backup.ErrChanged):
 		return http.StatusConflict
 	case errors.Is(err, backup.ErrNotFound):
 		return http.StatusNotFound
@@ -56,7 +59,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status := statusFor(err)
 	message := err.Error()
 	if status == http.StatusInternalServerError {
-		slog.Error("request failed", "path", r.URL.Path, "error", err)
+		slog.Error("api: request failed", "path", r.URL.Path, "error", err)
 		message = "internal error"
 	}
 	writeJSON(w, status, errorResponse{Error: message})

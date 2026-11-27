@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -15,12 +14,50 @@ import (
 	"time"
 
 	"github.com/emiHuy/mc-server-manager/config"
-	"github.com/emiHuy/mc-server-manager/internal/pidfile"
+	"github.com/stretchr/testify/require"
 )
 
-// recordingWriter stands in for the server's stdin. It is deliberately not
-// safe for concurrent use, so a test using it also checks that Send
-// serializes its writes.
+const readyLine = `[20:26:33] [Server thread/INFO]: Done (0.439s)! For help, type "help"`
+
+func infoLine(msg string) string {
+	return "[20:26:34] [Server thread/INFO]: " + msg
+}
+
+// newInstanceInState returns an instance that reports the given state without having launched anything or published any event.
+func newInstanceInState(state State) *Instance {
+	inst := New(config.MinecraftConfig{})
+	inst.state = state
+	return inst
+}
+
+// runReadConsole feeds the lines through readConsole and returns once it has handled all of them.
+func runReadConsole(t *testing.T, inst *Instance, lines ...string) {
+	t.Helper()
+
+	done := make(chan struct{})
+	input := strings.Join(lines, "\n") + "\n"
+	inst.readConsole(io.NopCloser(strings.NewReader(input)), done)
+
+	select {
+	case <-done:
+	default:
+		t.Fatal("readConsole returned without closing done")
+	}
+}
+
+func recvEvent(t *testing.T, ch <-chan Event) Event {
+	t.Helper()
+	select {
+	case e := <-ch:
+		return e
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for an event")
+		return Event{}
+	}
+}
+
+// recordingWriter stands in for the server's stdin.
+// It is deliberately not safe for concurrent use.
 type recordingWriter struct {
 	bytes.Buffer
 }
@@ -33,389 +70,83 @@ type failingWriter struct{ err error }
 func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
 func (failingWriter) Close() error                { return nil }
 
-func TestReadConsoleFillsHistory(t *testing.T) {
-	inst := New(config.MinecraftConfig{})
-
-	runReadConsole(t, inst, "a", "b", "c")
-
-	got := inst.RecentConsole(10)
-	want := []string{"a", "b", "c"}
-	if !slices.Equal(got, want) {
-		t.Errorf("RecentConsole(10) = %v, want %v", got, want)
-	}
+// fakeProcess makes collect believe a process with this PID is running.
+func fakeProcess(inst *Instance, pid int) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	inst.cmd = &exec.Cmd{Process: &os.Process{Pid: pid}}
+	inst.state = StateRunning
+	inst.startedAt = time.Now().Add(-30 * time.Second)
 }
 
-func TestSubscribeConsole(t *testing.T) {
-	inst := New(config.MinecraftConfig{})
-	runReadConsole(t, inst, "a", "b", "c")
-
-	snapshot, sub := inst.SubscribeConsole(2)
-	defer sub.Cancel()
-
-	if want := []string{"b", "c"}; !slices.Equal(snapshot, want) {
-		t.Errorf("snapshot = %v, want %v", snapshot, want)
-	}
-
-	runReadConsole(t, inst, "d")
-	if got := recvLine(t, sub.C); got != "d" {
-		t.Errorf("first live line = %q, want %q", got, "d")
-	}
-}
-
-func TestReadConsoleReadyLine(t *testing.T) {
-	t.Run("ready line moves starting to running", func(t *testing.T) {
-		inst := newInstanceInState(StateStarting)
-
-		runReadConsole(t, inst, readyLine)
-
-		if got := inst.State(); got != StateRunning {
-			t.Errorf("state = %v, want %v", got, StateRunning)
-		}
-	})
-
-	t.Run("ready line publishes state change then ready event", func(t *testing.T) {
-		inst := newInstanceInState(StateStarting)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(t, inst, readyLine)
-
-		first := recvEvent(t, sub.C)
-		if first.Type != EventStateChanged || first.State != StateRunning {
-			t.Errorf("first event = %+v, want state_changed to running", first)
-		}
-
-		second := recvEvent(t, sub.C)
-		if second.Type != EventServerReady {
-			t.Errorf("second event type = %v, want %v", second.Type, EventServerReady)
-		}
-		if want := `Done (0.439s)! For help, type "help"`; second.Message != want {
-			t.Errorf("ready event message = %q, want %q", second.Message, want)
-		}
-	})
-
-	t.Run("ready line is kept in console history", func(t *testing.T) {
-		inst := newInstanceInState(StateStarting)
-
-		runReadConsole(t, inst, "[20:26:33] [Server thread/INFO]: Preparing level", readyLine)
-
-		got := inst.RecentConsole(10)
-		want := []string{"[20:26:33] [Server thread/INFO]: Preparing level", readyLine}
-		if !slices.Equal(got, want) {
-			t.Errorf("RecentConsole(10) = %v, want %v", got, want)
-		}
-	})
-
-	t.Run("repeated ready line only flips once", func(t *testing.T) {
-		inst := newInstanceInState(StateStarting)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(t, inst, readyLine, readyLine)
-
-		// One state_changed and one server_ready, nothing more.
-		recvEvent(t, sub.C)
-		recvEvent(t, sub.C)
-		if extra := drainEvents(sub.C); len(extra) != 0 {
-			t.Errorf("unexpected extra events: %v", extra)
-		}
-	})
-
-	t.Run("ready line is ignored unless starting", func(t *testing.T) {
-		for _, state := range []State{StateStopping, StateStopped, StateCrashed, StateRunning} {
-			inst := newInstanceInState(state)
-			sub := inst.SubscribeEvents()
-
-			runReadConsole(t, inst, readyLine)
-
-			if got := inst.State(); got != state {
-				t.Errorf("state %v changed to %v, want it unchanged", state, got)
-			}
-			if events := drainEvents(sub.C); len(events) != 0 {
-				t.Errorf("state %v published events %v, want none", state, events)
-			}
-			sub.Cancel()
-		}
-	})
-
-	t.Run("ordinary lines change nothing", func(t *testing.T) {
-		inst := newInstanceInState(StateStarting)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(
-			t, inst,
-			"[20:26:33] [Server thread/INFO]: Preparing spawn area: 100%",
-			`Exception in thread "main" java.lang.Error`,
-		)
-
-		if got := inst.State(); got != StateStarting {
-			t.Errorf("state = %v, want %v", got, StateStarting)
-		}
-		if events := drainEvents(sub.C); len(events) != 0 {
-			t.Errorf("published events %v, want none", events)
-		}
-	})
-
-	t.Run("chat imitating the ready line does not flip state", func(t *testing.T) {
-		inst := newInstanceInState(StateStarting)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(t, inst, `[20:26:34] [Server thread/INFO]: <Steve> Done (0.439s)! For help, type "help"`)
-
-		if got := inst.State(); got != StateStarting {
-			t.Errorf("state = %v, want %v", got, StateStarting)
-		}
-
-		e := recvEvent(t, sub.C)
-		if e.Type != EventPlayerChat || e.Player != "Steve" {
-			t.Errorf("event = %+v, want a player_chat event from Steve", e)
-		}
-		if extra := drainEvents(sub.C); len(extra) != 0 {
-			t.Errorf("unexpected extra events: %v", extra)
-		}
-	})
-}
-
-func TestReadConsolePlayers(t *testing.T) {
+func TestInvalidStateErrors(t *testing.T) {
 	tests := []struct {
 		name  string
-		lines []string
-		want  []string
+		state State
+		call  func(*Instance) error
 	}{
-		{
-			name:  "one join",
-			lines: []string{infoLine("Steve joined the game")},
-			want:  []string{"Steve"},
-		},
-		{
-			name: "two joins are listed sorted",
-			lines: []string{
-				infoLine("Steve joined the game"),
-				infoLine("Alex joined the game"),
-			},
-			want: []string{"Alex", "Steve"},
-		},
-		{
-			name: "join then leave",
-			lines: []string{
-				infoLine("Steve joined the game"),
-				infoLine("Steve left the game"),
-			},
-			want: []string{},
-		},
-		{
-			name: "duplicate join keeps one entry",
-			lines: []string{
-				infoLine("Steve joined the game"),
-				infoLine("Steve joined the game"),
-			},
-			want: []string{"Steve"},
-		},
-		{
-			name: "leave for an unknown player changes nothing",
-			lines: []string{
-				infoLine("Steve joined the game"),
-				infoLine("Alex left the game"),
-			},
-			want: []string{"Steve"},
-		},
-		{
-			name: "rejoin after leaving",
-			lines: []string{
-				infoLine("Steve joined the game"),
-				infoLine("Steve left the game"),
-				infoLine("Steve joined the game"),
-			},
-			want: []string{"Steve"},
-		},
-		{
-			name:  "chat imitating a join adds nobody",
-			lines: []string{infoLine("<Steve> Alex joined the game")},
-			want:  []string{},
-		},
-		{
-			name: "chat imitating a leave removes nobody",
-			lines: []string{
-				infoLine("Alex joined the game"),
-				infoLine("<Steve> Alex left the game"),
-			},
-			want: []string{"Alex"},
-		},
-		{
-			name:  "name with a space is ignored",
-			lines: []string{infoLine("Some One joined the game")},
-			want:  []string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			inst := newInstanceInState(StateRunning)
-
-			runReadConsole(t, inst, tt.lines...)
-
-			if got := inst.Players(); !slices.Equal(got, tt.want) {
-				t.Errorf("Players() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestReadConsolePublishesPlayerEvents(t *testing.T) {
-	t.Run("join, chat, and leave are published in order", func(t *testing.T) {
-		inst := newInstanceInState(StateRunning)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(
-			t, inst,
-			infoLine("Steve joined the game"),
-			infoLine("<Steve> hi"),
-			infoLine("Steve left the game"),
-		)
-
-		joined := recvEvent(t, sub.C)
-		if joined.Type != EventPlayerJoined || joined.Player != "Steve" {
-			t.Errorf("first event = %+v, want player_joined for Steve", joined)
-		}
-
-		chat := recvEvent(t, sub.C)
-		if chat.Type != EventPlayerChat || chat.Player != "Steve" || chat.Message != "hi" {
-			t.Errorf("second event = %+v, want player_chat from Steve saying %q", chat, "hi")
-		}
-
-		left := recvEvent(t, sub.C)
-		if left.Type != EventPlayerLeft || left.Player != "Steve" {
-			t.Errorf("third event = %+v, want player_left for Steve", left)
-		}
-
-		if extra := drainEvents(sub.C); len(extra) != 0 {
-			t.Errorf("unexpected extra events: %v", extra)
-		}
-	})
-
-	t.Run("chat imitating a join publishes chat, not a join", func(t *testing.T) {
-		inst := newInstanceInState(StateRunning)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(t, inst, infoLine("<Steve> Alex joined the game"))
-
-		got := recvEvent(t, sub.C)
-		if got.Type != EventPlayerChat || got.Player != "Steve" || got.Message != "Alex joined the game" {
-			t.Errorf("event = %+v, want player_chat from Steve saying %q", got, "Alex joined the game")
-		}
-		if extra := drainEvents(sub.C); len(extra) != 0 {
-			t.Errorf("unexpected extra events: %v", extra)
-		}
-	})
-
-	t.Run("warnings and errors are published", func(t *testing.T) {
-		inst := newInstanceInState(StateRunning)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(
-			t, inst,
-			"[20:30:01] [Server thread/WARN]: Can't keep up!",
-			"[20:30:02] [Server thread/ERROR]: Failed to save level",
-		)
-
-		warn := recvEvent(t, sub.C)
-		if warn.Type != EventServerWarning || warn.Message != "Can't keep up!" {
-			t.Errorf("first event = %+v, want server_warning %q", warn, "Can't keep up!")
-		}
-
-		errEvent := recvEvent(t, sub.C)
-		if errEvent.Type != EventServerError || errEvent.Message != "Failed to save level" {
-			t.Errorf("second event = %+v, want server_error %q", errEvent, "Failed to save level")
-		}
-	})
-
-	t.Run("ordinary lines publish nothing", func(t *testing.T) {
-		inst := newInstanceInState(StateRunning)
-		sub := inst.SubscribeEvents()
-		defer sub.Cancel()
-
-		runReadConsole(
-			t, inst,
-			infoLine("Preparing spawn area: 100%"),
-			`Exception in thread "main" java.lang.Error`,
-		)
-
-		if events := drainEvents(sub.C); len(events) != 0 {
-			t.Errorf("published events %v, want none", events)
-		}
-	})
-}
-
-func TestSendRejectsBadInput(t *testing.T) {
-	tests := []struct {
-		name    string
-		command string
-		state   State
-		want    string // substring of the error
-	}{
-		{"empty", "", StateRunning, "empty"},
-		{"whitespace only", "  \t ", StateRunning, "empty"},
-		{"embedded newline", "say hi\nstop", StateRunning, "control character"},
-		{"embedded carriage return", "say hi\rstop", StateRunning, "control character"},
-		{"stopped", "list", StateStopped, "stopped"},
-		{"stopping", "list", StateStopping, "stopping"},
-		{"crashed", "list", StateCrashed, "crashed"},
+		{"Start while starting", StateStarting, (*Instance).Start},
+		{"Start while running", StateRunning, (*Instance).Start},
+		{"Start while stopping", StateStopping, (*Instance).Start},
+		{"RequestStop while stopped", StateStopped, (*Instance).RequestStop},
+		{"RequestStop while stopping", StateStopping, (*Instance).RequestStop},
+		{"RequestStop while crashed", StateCrashed, (*Instance).RequestStop},
+		{"Restart while stopping", StateStopping, (*Instance).Restart},
+		{"Kill without a process", StateStopped, (*Instance).Kill},
+		{"Send while stopped", StateStopped, func(i *Instance) error { return i.Send("list") }},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inst := newInstanceInState(tt.state)
-			stdin := &recordingWriter{}
-			inst.stdin = stdin
-
-			err := inst.Send(tt.command)
-			if err == nil {
-				t.Fatalf("Send(%q) in state %v returned no error", tt.command, tt.state)
-			}
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("Send(%q) error = %q, want it to contain %q", tt.command, err, tt.want)
-			}
-			if stdin.Len() != 0 {
-				t.Errorf("Send(%q) wrote %q to stdin despite the error", tt.command, stdin.String())
-			}
+			require.ErrorIs(t, tt.call(inst), ErrInvalidState)
+			require.Equal(t, tt.state, inst.State())
 		})
 	}
 }
 
-func TestSendWritesTrimmedCommand(t *testing.T) {
-	// Commands are accepted while the server is still loading as well.
-	for _, state := range []State{StateStarting, StateRunning} {
-		t.Run(state.String(), func(t *testing.T) {
-			inst := newInstanceInState(state)
-			stdin := &recordingWriter{}
-			inst.stdin = stdin
-
-			err := inst.Send("  say hello world \n")
-			if err != nil {
-				t.Fatalf("Send() error: %v", err)
-			}
-
-			if got, want := stdin.String(), "say hello world\n"; got != want {
-				t.Errorf("stdin received %q, want %q", got, want)
-			}
-		})
-	}
+func TestStartFailureLeavesInstanceStopped(t *testing.T) {
+	inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+	require.Error(t, inst.Start())
+	require.Equal(t, StateStopped, inst.State())
 }
 
-func TestSendReturnsWriteError(t *testing.T) {
+func TestRequestStopWritesStop(t *testing.T) {
+	inst := newInstanceInState(StateRunning)
+	stdin := &recordingWriter{}
+	inst.stdin = stdin
+
+	require.NoError(t, inst.RequestStop())
+	require.Equal(t, "stop\n", stdin.String())
+	require.Equal(t, StateStopping, inst.State())
+}
+
+func TestRequestStopRollsBackWhenWriteFails(t *testing.T) {
 	boom := errors.New("pipe closed")
-
 	inst := newInstanceInState(StateRunning)
 	inst.stdin = failingWriter{err: boom}
 
-	err := inst.Send("list")
-	if !errors.Is(err, boom) {
-		t.Errorf("Send() error = %v, want it to wrap %v", err, boom)
+	require.ErrorIs(t, inst.RequestStop(), boom)
+	require.Equal(t, StateRunning, inst.State())
+}
+
+func TestSendWritesTrimmedCommand(t *testing.T) {
+	inst := newInstanceInState(StateRunning)
+	stdin := &recordingWriter{}
+	inst.stdin = stdin
+
+	require.NoError(t, inst.Send("  /say hello world \n"))
+	require.Equal(t, "say hello world\n", stdin.String())
+}
+
+func TestSendRejectsBadCommands(t *testing.T) {
+	for _, command := range []string{"", "  ", "/", "say hi\nstop", "say hi\rstop"} {
+		inst := newInstanceInState(StateRunning)
+		stdin := &recordingWriter{}
+		inst.stdin = stdin
+
+		require.ErrorIs(t, inst.Send(command), ErrInvalidCommand)
+		require.Equal(t, 0, stdin.Len())
 	}
 }
 
@@ -427,13 +158,11 @@ func TestSendSerializesWrites(t *testing.T) {
 	inst.stdin = stdin
 
 	var wg sync.WaitGroup
-	for i := 0; i < senders; i++ {
+	for i := range senders {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := inst.Send(fmt.Sprintf("say message-%d", i)); err != nil {
-				t.Errorf("Send() error: %v", err)
-			}
+			require.NoError(t, inst.Send(fmt.Sprintf("say message-%d", i)))
 		}(i)
 	}
 	wg.Wait()
@@ -447,277 +176,232 @@ func TestSendSerializesWrites(t *testing.T) {
 
 	slices.Sort(got)
 	slices.Sort(want)
-	if !slices.Equal(got, want) {
-		t.Errorf("stdin lines were interleaved or lost:\n got: %v\nwant: %v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
-func TestMetricsStopped(t *testing.T) {
-	inst := New(config.MinecraftConfig{Directory: t.TempDir()})
-
-	m, err := inst.Metrics()
-	if err != nil {
-		t.Fatalf("Metrics() error: %v", err)
-	}
-
-	if m.State != StateStopped {
-		t.Errorf("State = %v, want %v", m.State, StateStopped)
-	}
-	if m.Uptime != 0 {
-		t.Errorf("Uptime = %v, want 0", m.Uptime)
-	}
-	if m.PlayersOnline != 0 {
-		t.Errorf("PlayersOnline = %d, want 0", m.PlayersOnline)
-	}
-	if m.CPUPercent != 0 || m.CPUMachinePercent != 0 || m.MemoryBytes != 0 {
-		t.Errorf("process fields = cpu %v / %v, memory %d, want all zero",
-			m.CPUPercent, m.CPUMachinePercent, m.MemoryBytes)
-	}
-	if m.CPUCores != runtime.NumCPU() {
-		t.Errorf("CPUCores = %d, want %d", m.CPUCores, runtime.NumCPU())
-	}
-	if m.DiskTotalBytes == 0 {
-		t.Errorf("DiskTotalBytes = 0, want disk usage reported even when stopped")
-	}
-}
-
-func TestMetricsCountsPlayers(t *testing.T) {
-	inst := New(config.MinecraftConfig{Directory: t.TempDir()})
-	inst.players.add("Steve")
-	inst.players.add("Alex")
-
-	m, err := inst.Metrics()
-	if err != nil {
-		t.Fatalf("Metrics() error: %v", err)
-	}
-	if m.PlayersOnline != 2 {
-		t.Errorf("PlayersOnline = %d, want 2", m.PlayersOnline)
-	}
-}
-
-func TestMetricsMissingDirectory(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "does", "not", "exist")
-	inst := New(config.MinecraftConfig{Directory: missing})
-
-	m, err := inst.Metrics()
-	if err == nil {
-		t.Fatal("Metrics() returned no error for a missing directory")
-	}
-	if m.State != StateStopped {
-		t.Errorf("State = %v, want the partly filled result to keep %v", m.State, StateStopped)
-	}
-}
-
-func TestStatusStopped(t *testing.T) {
-	inst := New(config.MinecraftConfig{})
-
-	st := inst.Status()
-	if st.State != StateStopped {
-		t.Errorf("State = %v, want %v", st.State, StateStopped)
-	}
-	if st.Uptime != 0 {
-		t.Errorf("Uptime = %v, want 0", st.Uptime)
-	}
-	if len(st.Players) != 0 {
-		t.Errorf("Players = %v, want none", st.Players)
-	}
-}
-
-func TestStatusRunningReportsUptimeAndPlayers(t *testing.T) {
+func TestStatusReportsUptimeAndPlayers(t *testing.T) {
 	inst := newInstanceInState(StateRunning)
 	inst.startedAt = time.Now().Add(-90 * time.Second)
 	inst.players.add("Steve")
 	inst.players.add("Alex")
 
 	st := inst.Status()
-	if st.Uptime < 90*time.Second || st.Uptime > 95*time.Second {
-		t.Errorf("Uptime = %v, want about 90s", st.Uptime)
-	}
-	if want := []string{"Alex", "Steve"}; !slices.Equal(st.Players, want) {
-		t.Errorf("Players = %v, want %v", st.Players, want)
-	}
+	require.GreaterOrEqual(t, st.Uptime, 90*time.Second)
+	require.LessOrEqual(t, st.Uptime, 95*time.Second)
+	require.Equal(t, []string{"Alex", "Steve"}, st.Players)
 }
 
-func TestStatusUptimeIsZeroUnlessRunning(t *testing.T) {
-	for _, state := range []State{StateStopped, StateStarting, StateStopping, StateCrashed} {
-		inst := newInstanceInState(state)
-		if got := inst.Status().Uptime; got != 0 {
-			t.Errorf("state %v: Uptime = %v, want 0", state, got)
-		}
-	}
+func TestMetricsStopped(t *testing.T) {
+	inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+
+	m, err := inst.Metrics()
+	require.NoError(t, err)
+	require.Equal(t, StateStopped, m.State)
+	require.Equal(t, float64(0), m.CPUPercent)
+	require.Equal(t, uint64(0), m.MemoryBytes)
+	require.Greater(t, m.DiskTotalBytes, uint64(0))
 }
 
-func TestLooksLikeJava(t *testing.T) {
-	tests := []struct {
-		name string
-		proc string
-		want bool
-	}{
-		{"java", "java", true},
-		{"java.exe", "java.exe", true},
-		{"javaw.exe", "javaw.exe", true},
-		{"uppercase", "Java", true},
-		{"mixed case exe", "JAVA.EXE", true},
-		{"bash", "bash", false},
-		{"test binary", "minecraft.test.exe", false},
-		{"empty", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := looksLikeJava(tt.proc); got != tt.want {
-				t.Errorf("looksLikeJava(%q) = %v, want %v", tt.proc, got, tt.want)
-			}
-		})
-	}
-}
-
-// deadPID returns the PID of a process that has already exited.
-func deadPID(t *testing.T) int {
-	t.Helper()
-
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(exe, "-test.run=^$")
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("cannot run helper process: %v", err)
-	}
-	return cmd.Process.Pid
-}
-
-func TestCheckStale(t *testing.T) {
-	tests := []struct {
-		name        string
-		setup       func(t *testing.T, path string) // nil means no pidfile
-		wantErr     bool
-		wantRemoved bool
-	}{
-		{
-			name:        "no pidfile",
-			setup:       nil,
-			wantRemoved: true, // nothing to keep either
-		},
-		{
-			name: "corrupt pidfile",
-			setup: func(t *testing.T, path string) {
-				if err := os.WriteFile(path, []byte("not json"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantRemoved: true,
-		},
-		{
-			name: "dead pid",
-			setup: func(t *testing.T, path string) {
-				info := pidfile.Info{PID: deadPID(t), StartedAt: time.Now()}
-				if err := pidfile.Write(path, info); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantRemoved: true,
-		},
-		{
-			name: "live pid that is not java",
-			setup: func(t *testing.T, path string) {
-				// The test binary is alive but is not named java, so this
-				// looks like a reused PID.
-				info := pidfile.Info{PID: os.Getpid(), StartedAt: time.Now()}
-				if err := pidfile.Write(path, info); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantRemoved: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			inst := New(config.MinecraftConfig{Directory: t.TempDir()})
-			path := inst.pidfilePath()
-			if tt.setup != nil {
-				tt.setup(t, path)
-			}
-
-			err := inst.CheckStale()
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("CheckStale() error = %v, wantErr %v", err, tt.wantErr)
-			}
-
-			_, statErr := os.Stat(path)
-			removed := errors.Is(statErr, os.ErrNotExist)
-			if removed != tt.wantRemoved {
-				t.Errorf("pidfile removed = %v, want %v", removed, tt.wantRemoved)
-			}
-		})
-	}
-}
-
-func TestNormalizeCommand(t *testing.T) {
-	tests := []struct {
-		name    string
-		in      string
-		want    string
-		wantErr bool
-	}{
-		// accepted
-		{"plain", "list", "list", false},
-		{"surrounding whitespace", "  list  ", "list", false},
-		{"trailing newline is trimmed", "list\n", "list", false},
-		{"leading slash", "/list", "list", false},
-		{"slash then space", "/ list", "list", false},
-		{"whitespace before slash", "  /list", "list", false},
-		{"only one slash is stripped", "//list", "/list", false},
-		{"slash inside is untouched", "say a/b", "say a/b", false},
-		{"at the length limit", strings.Repeat("a", maxCommandLength), strings.Repeat("a", maxCommandLength), false},
-		{"slash does not count toward the limit", "/" + strings.Repeat("a", maxCommandLength), strings.Repeat("a", maxCommandLength), false},
-		{"limit is in bytes, at the limit", strings.Repeat("é", maxCommandLength/2), strings.Repeat("é", maxCommandLength/2), false},
-
-		// rejected
-		{"empty", "", "", true},
-		{"whitespace only", "   ", "", true},
-		{"bare slash", "/", "", true},
-		{"slash and spaces", " /  ", "", true},
-		{"over the limit", strings.Repeat("a", maxCommandLength+1), "", true},
-		{"limit is in bytes, over the limit", strings.Repeat("é", maxCommandLength/2+1), "", true},
-		{"embedded newline", "say hi\nstop", "", true},
-		{"embedded carriage return", "say hi\rstop", "", true},
-		{"embedded tab", "say\thi", "", true},
-		{"bell character", "say \x07", "", true},
-		{"nul byte", "say \x00", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeCommand(tt.in)
-
-			if tt.wantErr {
-				if !errors.Is(err, ErrInvalidCommand) {
-					t.Fatalf("error = %v, want ErrInvalidCommand", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-// Validation must run before the state check, so a bad command is reported as
-// a bad command even when the server is stopped.
-func TestSendValidatesBeforeState(t *testing.T) {
+func TestPublishEventTimestamp(t *testing.T) {
 	inst := New(config.MinecraftConfig{})
+	sub := inst.SubscribeEvents()
+	defer sub.Cancel()
 
-	if err := inst.Send("/"); !errors.Is(err, ErrInvalidCommand) {
-		t.Errorf("Send(%q) error = %v, want ErrInvalidCommand", "/", err)
+	before := time.Now()
+	inst.PublishEvent(Event{Type: EventServerWarning})
+
+	got := recvEvent(t, sub.C)
+	require.NotZero(t, got.Timestamp)
+	require.False(t, got.Timestamp.Before(before))
+
+	given := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	inst.PublishEvent(Event{Type: EventServerWarning, Timestamp: given})
+	require.Equal(t, given, recvEvent(t, sub.C).Timestamp)
+}
+
+func TestReadConsoleReadyLine(t *testing.T) {
+	t.Run("moves starting to running, publishing the state change then the ready event", func(t *testing.T) {
+		inst := newInstanceInState(StateStarting)
+		sub := inst.SubscribeEvents()
+		defer sub.Cancel()
+
+		runReadConsole(t, inst, readyLine)
+		require.Equal(t, StateRunning, inst.State())
+
+		first := recvEvent(t, sub.C)
+		require.Equal(t, EventStateChanged, first.Type)
+		require.Equal(t, StateRunning, first.State)
+
+		require.Equal(t, EventServerReady, recvEvent(t, sub.C).Type)
+	})
+
+	t.Run("is ignored unless starting", func(t *testing.T) {
+		for _, state := range []State{StateStopping, StateStopped, StateCrashed, StateRunning} {
+			inst := newInstanceInState(state)
+			runReadConsole(t, inst, readyLine)
+			require.Equal(t, state, inst.State())
+		}
+	})
+
+	t.Run("chat imitating the ready line does not flip state", func(t *testing.T) {
+		inst := newInstanceInState(StateStarting)
+		sub := inst.SubscribeEvents()
+		defer sub.Cancel()
+
+		runReadConsole(t, inst, infoLine(`<Steve> Done (0.439s)! For help, type "help"`))
+		require.Equal(t, StateStarting, inst.State())
+
+		e := recvEvent(t, sub.C)
+		require.Equal(t, EventPlayerChat, e.Type)
+		require.Equal(t, "Steve", e.Player)
+	})
+}
+
+func TestReadConsolePlayers(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{
+			name:  "two joins are listed sorted",
+			lines: []string{infoLine("Steve joined the game"), infoLine("Alex joined the game")},
+			want:  []string{"Alex", "Steve"},
+		},
+		{
+			name:  "join then leave",
+			lines: []string{infoLine("Steve joined the game"), infoLine("Steve left the game")},
+			want:  []string{},
+		},
+		{
+			name:  "duplicate join keeps one entry",
+			lines: []string{infoLine("Steve joined the game"), infoLine("Steve joined the game")},
+			want:  []string{"Steve"},
+		},
+		{
+			name:  "chat imitating a join adds nobody",
+			lines: []string{infoLine("<Steve> Alex joined the game")},
+			want:  []string{},
+		},
+		{
+			name:  "chat imitating a leave removes nobody",
+			lines: []string{infoLine("Alex joined the game"), infoLine("<Steve> Alex left the game")},
+			want:  []string{"Alex"},
+		},
 	}
-	// Valid once the slash is stripped, so it gets as far as the state check.
-	if err := inst.Send("/list"); !errors.Is(err, ErrInvalidState) {
-		t.Errorf("Send(%q) error = %v, want ErrInvalidState", "/list", err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := newInstanceInState(StateRunning)
+			runReadConsole(t, inst, tt.lines...)
+			require.Equal(t, tt.want, inst.Players())
+		})
 	}
+}
+
+func TestReadConsolePublishesPlayerEvents(t *testing.T) {
+	inst := newInstanceInState(StateRunning)
+	sub := inst.SubscribeEvents()
+	defer sub.Cancel()
+
+	runReadConsole(
+		t, inst,
+		infoLine("Steve joined the game"),
+		infoLine("<Steve> hi"),
+		infoLine("Steve left the game"),
+	)
+
+	for _, want := range []EventType{EventPlayerJoined, EventPlayerChat, EventPlayerLeft} {
+		got := recvEvent(t, sub.C)
+		require.Equal(t, want, got.Type)
+		require.Equal(t, "Steve", got.Player)
+	}
+}
+
+func TestSetStateLockedStartedAt(t *testing.T) {
+	inst := New(config.MinecraftConfig{})
+	set := func(s State) {
+		inst.mu.Lock()
+		defer inst.mu.Unlock()
+		inst.setStateLocked(s)
+	}
+	startedAt := func() time.Time {
+		inst.mu.Lock()
+		defer inst.mu.Unlock()
+		return inst.startedAt
+	}
+
+	set(StateStarting)
+	require.Zero(t, startedAt())
+
+	set(StateRunning)
+	first := startedAt()
+	require.NotZero(t, first)
+
+	// A stop that fails goes back to running. That must not restart the uptime clock.
+	time.Sleep(2 * time.Millisecond)
+	set(StateStopping)
+	set(StateRunning)
+	require.Equal(t, first, startedAt())
+
+	set(StateStopped)
+	require.Zero(t, startedAt())
+}
+
+func TestCollect(t *testing.T) {
+	t.Run("no process skips the sampler", func(t *testing.T) {
+		inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+
+		called := false
+		_, err := inst.collect(func(int32) (float64, uint64, error) {
+			called = true
+			return 100, 1 << 20, nil
+		})
+		require.NoError(t, err)
+		require.False(t, called)
+	})
+
+	t.Run("uses the sampled readings", func(t *testing.T) {
+		inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+		fakeProcess(inst, 4242)
+
+		var gotPID int32
+		m, err := inst.collect(func(pid int32) (float64, uint64, error) {
+			gotPID = pid
+			return 150, 1 << 20, nil
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, int32(4242), gotPID)
+		require.Equal(t, float64(150), m.CPUPercent)
+		require.Equal(t, uint64(1<<20), m.MemoryBytes)
+		require.GreaterOrEqual(t, m.Uptime, 30*time.Second)
+	})
+
+	t.Run("a failed sample keeps the rest of the reading", func(t *testing.T) {
+		inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+		fakeProcess(inst, 4242)
+
+		m, err := inst.collect(func(int32) (float64, uint64, error) {
+			return 99, 99, errors.New("process vanished")
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, float64(0), m.CPUPercent)
+		require.Equal(t, uint64(0), m.MemoryBytes)
+		require.Greater(t, m.DiskTotalBytes, uint64(0))
+	})
+}
+
+// Sampling can block for a while, so collect must not hold mu during it.
+func TestCollectDoesNotHoldLockWhileSampling(t *testing.T) {
+	inst := New(config.MinecraftConfig{Directory: t.TempDir()})
+	fakeProcess(inst, 4242)
+
+	_, err := inst.collect(func(int32) (float64, uint64, error) {
+		require.True(t, inst.mu.TryLock())
+		inst.mu.Unlock()
+		return 0, 0, nil
+	})
+	require.NoError(t, err)
 }

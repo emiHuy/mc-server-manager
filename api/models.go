@@ -70,11 +70,16 @@ func newBackupListResponse(infos []backup.Info) apitypes.BackupListResponse {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("api: cannot encode response", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-
-	err := json.MarshalWrite(w, v)
-	if err != nil {
-		slog.Error("cannot write response", "error", err)
+	if _, err := w.Write(data); err != nil {
+		slog.Error("api: cannot write response", "error", err)
 	}
 }

@@ -18,7 +18,13 @@ import (
 	"github.com/emiHuy/mc-server-manager/minecraft"
 )
 
+const (
+	pollInterval = 500 * time.Millisecond
+	waitTimeout  = 30 * time.Second
+)
+
 func main() {
+	// CLI command to generate random 256-bit hex token and exit.
 	if len(os.Args) > 1 && os.Args[1] == "token" {
 		b := make([]byte, 32)
 		rand.Read(b)
@@ -26,68 +32,71 @@ func main() {
 		return
 	}
 
-	conf, err := config.LoadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
-		slog.Error("config load failed", "error", err)
+		slog.Error("main: failed to load config", "error", err)
 		return
 	}
 
-	conf.InitLogger()
-	slog.Info("application starting")
+	cfg.InitLogger()
 
-	if conf.API.Host == config.TailscaleHost {
-		host, err := waitForTailscale(context.Background(), net.InterfaceAddrs, 500*time.Millisecond, 30*time.Second)
+	// Wait for a Tailscale IP before binding the API if configured to use it.
+	if cfg.API.Host == config.TailscaleHost {
+		host, err := waitForTailscale(context.Background(), net.InterfaceAddrs, pollInterval, waitTimeout)
 		if err != nil {
-			slog.Error("failed to find tailscale host", "error", err)
+			slog.Error("main: failed to resolve tailscale host", "error", err)
 			return
 		}
-		conf.API.Host = host.String()
-		slog.Info("resolved tailscale host", "host", host.String())
+		cfg.API.Host = host.String()
+		slog.Info("main: resolved tailscale host", "host", host.String())
 	}
 
-	instance := minecraft.New(conf.Minecraft)
+	instance := minecraft.New(cfg.Minecraft)
 	if err := instance.CheckStale(); err != nil {
-		slog.Error("startup check failed", "error", err)
+		slog.Error("main: startup check failed", "error", err)
 		os.Exit(1)
 	}
 
 	restarter := minecraft.NewRestarter(
 		instance,
-		conf.AutoRestart.Enabled,
-		conf.AutoRestart.MaxRestarts,
-		conf.AutoRestart.InitialBackoff,
+		cfg.AutoRestart.Enabled,
+		cfg.AutoRestart.MaxRestarts,
+		cfg.AutoRestart.InitialBackoff,
 	)
 
-	backups := backup.New(instance, conf.Minecraft.Directory, conf.Backup)
+	backups := backup.New(instance, cfg.Minecraft.Directory, cfg.Backup)
 
-	var scheduler *backup.Scheduler // stays nil when scheduled backups are off
-	if conf.Backup.Interval > 0 {
-		scheduler = backup.NewScheduler(backups, conf.Backup.Interval)
+	var scheduler *backup.Scheduler
+	if cfg.Backup.Interval > 0 {
+		scheduler = backup.NewScheduler(backups, cfg.Backup.Interval)
 		scheduler.Start()
-		slog.Info("scheduled backups enabled", "interval", conf.Backup.Interval.String(), "keep", conf.Backup.Keep)
+		slog.Info("main: scheduled backups enabled", "interval", cfg.Backup.Interval.String(), "keep", cfg.Backup.Keep)
 	}
 
-	server := api.New(conf.API, instance, restarter, backups, api.WithNextBackup(scheduler))
-	slog.Info("starting api server")
+	server := api.New(cfg.API, instance, restarter, backups, api.WithNextBackup(scheduler))
+	slog.Info("main: starting api server", "host", cfg.API.Host)
 
+	// Run API asynchronously so main can wait on signals or fatal server errors.
 	apiErr := make(chan error, 1)
-	go func() { apiErr <- server.Run() }()
+	go func() {
+		apiErr <- server.Run()
+	}()
 
-	if conf.Minecraft.Autostart {
-		err = instance.Start()
-		if err != nil {
-			slog.Error("minecraft server start failed", "error", err)
+	if cfg.Minecraft.Autostart {
+		if err = instance.Start(); err != nil {
+			slog.Error("main: failed to start minecraft", "error", err)
 		}
 	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
+	// Block until shutdown signal or API failure, then tear down cleanly.
 	select {
 	case <-sig:
-		slog.Info("interrupt received")
+		slog.Info("main: signal received")
 	case err := <-apiErr:
-		slog.Error("api server failed", "error", err)
+		slog.Error("main: api server failed", "error", err)
 	}
 
 	shutdown(instance, restarter, scheduler, server, sig)

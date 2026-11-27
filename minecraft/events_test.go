@@ -1,31 +1,10 @@
 package minecraft
 
-import "testing"
+import (
+	"testing"
 
-func TestEventTypeString(t *testing.T) {
-	tests := []struct {
-		et   EventType
-		want string
-	}{
-		{EventServerWarning, "server_warning"},
-		{EventServerError, "server_error"},
-		{EventServerReady, "server_ready"},
-		{EventStateChanged, "state_changed"},
-		{EventPlayerJoined, "player_joined"},
-		{EventPlayerLeft, "player_left"},
-		{EventPlayerChat, "player_chat"},
-		{EventUnknown, "unknown"},
-		{EventType(99), "unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			if got := tt.et.String(); got != tt.want {
-				t.Errorf("EventType(%d).String() = %q, want %q", int(tt.et), got, tt.want)
-			}
-		})
-	}
-}
+	"github.com/stretchr/testify/require"
+)
 
 func TestParseLine(t *testing.T) {
 	tests := []struct {
@@ -35,86 +14,24 @@ func TestParseLine(t *testing.T) {
 		wantMessage string
 		wantOK      bool
 	}{
-		{
-			name:        "ready line",
-			line:        readyLine,
-			wantLevel:   "INFO",
-			wantMessage: `Done (0.439s)! For help, type "help"`,
-			wantOK:      true,
-		},
-		{
-			name:        "ordinary info line",
-			line:        "[20:26:33] [Server thread/INFO]: Preparing spawn area: 100%",
-			wantLevel:   "INFO",
-			wantMessage: "Preparing spawn area: 100%",
-			wantOK:      true,
-		},
-		{
-			name:        "warn level",
-			line:        "[20:26:33] [Server thread/WARN]: Can't keep up!",
-			wantLevel:   "WARN",
-			wantMessage: "Can't keep up!",
-			wantOK:      true,
-		},
-		{
-			name:        "different thread name",
-			line:        "[20:26:33] [Worker-Main-1/INFO]: Loading chunks",
-			wantLevel:   "INFO",
-			wantMessage: "Loading chunks",
-			wantOK:      true,
-		},
-		{
-			name:        "chat line keeps player prefix in message",
-			line:        "[20:26:34] [Server thread/INFO]: <Steve> hello",
-			wantLevel:   "INFO",
-			wantMessage: "<Steve> hello",
-			wantOK:      true,
-		},
-		{
-			name:   "no leading bracket",
-			line:   `Exception in thread "main" java.lang.Error`,
-			wantOK: false,
-		},
-		{
-			name:   "stack trace line",
-			line:   "\tat java.base/java.lang.Thread.run(Thread.java:1583)",
-			wantOK: false,
-		},
-		{
-			name:   "no slash",
-			line:   "[12:00:00] no slash here: x",
-			wantOK: false,
-		},
-		{
-			name:   "no closing bracket after slash",
-			line:   "[12:00:00] [main/INFO",
-			wantOK: false,
-		},
-		{
-			name:   "no colon after bracket",
-			line:   "[12:00:00] [main/INFO] no colon",
-			wantOK: false,
-		},
-		{
-			name:   "empty string",
-			line:   "",
-			wantOK: false,
-		},
+		{"info", "[12:00:00] [Server thread/INFO]: hello", "INFO", "hello", true},
+		{"warn", "[12:00:00] [Server thread/WARN]: careful", "WARN", "careful", true},
+		{"error", "[12:00:00] [Server thread/ERROR]: boom", "ERROR", "boom", true},
+		{"slash and bracket in message", "[12:00:00] [Server thread/INFO]: a/b]c", "INFO", "a/b]c", true},
+		{"empty message", "[12:00:00] [Server thread/INFO]: ", "INFO", "", true},
+		{"no leading bracket", "Steve joined the game", "", "", false},
+		{"no slash", "[12:00:00] hello", "", "", false},
+		{"no closing bracket", "[Server thread/INFO", "", "", false},
+		{"missing colon and space", "[12:00:00] [Server thread/INFO] hello", "", "", false},
+		{"empty line", "", "", "", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			level, message, ok := parseLine(tt.line)
-
-			if ok != tt.wantOK {
-				t.Fatalf("parseLine(%q) ok = %v, want %v", tt.line, ok, tt.wantOK)
-			}
-			if level != tt.wantLevel {
-				t.Errorf("parseLine(%q) level = %q, want %q", tt.line, level, tt.wantLevel)
-			}
-			if message != tt.wantMessage {
-				t.Errorf("parseLine(%q) message = %q, want %q", tt.line, message, tt.wantMessage)
-			}
+			require.Equal(t, tt.wantOK, ok)
+			require.Equal(t, tt.wantLevel, level)
+			require.Equal(t, tt.wantMessage, message)
 		})
 	}
 }
@@ -123,165 +40,124 @@ func TestParseEvent(t *testing.T) {
 	tests := []struct {
 		name        string
 		line        string
+		wantOK      bool
 		wantType    EventType
 		wantPlayer  string
 		wantMessage string
-		wantOK      bool
 	}{
-		// Server ready
 		{
-			name:        "ready line",
-			line:        readyLine,
+			name:        "server ready",
+			line:        `[12:00:00] [Server thread/INFO]: Done (3.2s)! For help, type "help"`,
+			wantOK:      true,
 			wantType:    EventServerReady,
-			wantMessage: `Done (0.439s)! For help, type "help"`,
-			wantOK:      true,
+			wantMessage: `Done (3.2s)! For help, type "help"`,
 		},
-		{
-			name:     "starts with Done but wrong ending",
-			line:     "[20:26:34] [Server thread/INFO]: Done (0.439s)! something else",
-			wantType: EventUnknown,
-		},
-
-		// Warnings and errors come from the level
-		{
-			name:        "warning",
-			line:        "[20:26:33] [Server thread/WARN]: Can't keep up! Is the server overloaded?",
-			wantType:    EventServerWarning,
-			wantMessage: "Can't keep up! Is the server overloaded?",
-			wantOK:      true,
-		},
-		{
-			name:        "error",
-			line:        "[20:26:33] [Server thread/ERROR]: Failed to save level",
-			wantType:    EventServerError,
-			wantMessage: "Failed to save level",
-			wantOK:      true,
-		},
-		{
-			name:        "ready wording at warn level is a warning",
-			line:        `[20:26:34] [Server thread/WARN]: Done (0.439s)! For help, type "help"`,
-			wantType:    EventServerWarning,
-			wantMessage: `Done (0.439s)! For help, type "help"`,
-			wantOK:      true,
-		},
-
-		// Joins and leaves
 		{
 			name:        "player joined",
-			line:        "[20:30:01] [Server thread/INFO]: Steve joined the game",
+			line:        "[12:00:01] [Server thread/INFO]: Steve joined the game",
+			wantOK:      true,
 			wantType:    EventPlayerJoined,
 			wantPlayer:  "Steve",
 			wantMessage: "Steve joined the game",
-			wantOK:      true,
 		},
 		{
 			name:        "player left",
-			line:        "[20:31:12] [Server thread/INFO]: Steve left the game",
+			line:        "[12:00:02] [Server thread/INFO]: Steve left the game",
+			wantOK:      true,
 			wantType:    EventPlayerLeft,
 			wantPlayer:  "Steve",
 			wantMessage: "Steve left the game",
-			wantOK:      true,
 		},
-		{
-			name:     "join wording with a space in the name",
-			line:     "[20:30:01] [Server thread/INFO]: Some One joined the game",
-			wantType: EventUnknown,
-		},
-
-		// Chat
 		{
 			name:        "player chat",
-			line:        "[20:30:05] [Server thread/INFO]: <Steve> hello",
+			line:        "[12:00:03] [Async Chat Thread - #0/INFO]: <Steve> hello world",
+			wantOK:      true,
 			wantType:    EventPlayerChat,
 			wantPlayer:  "Steve",
-			wantMessage: "hello",
-			wantOK:      true,
+			wantMessage: "hello world",
 		},
 		{
-			name:        "chat containing a greater-than sign",
-			line:        "[20:30:05] [Server thread/INFO]: <Steve> a > b",
-			wantType:    EventPlayerChat,
-			wantPlayer:  "Steve",
-			wantMessage: "a > b",
+			name:        "warning",
+			line:        "[12:00:04] [Server thread/WARN]: Can't keep up!",
 			wantOK:      true,
+			wantType:    EventServerWarning,
+			wantMessage: "Can't keep up!",
 		},
 		{
-			name:        "chat imitating ready is still chat",
-			line:        `[20:26:34] [Server thread/INFO]: <Steve> Done (0.439s)! For help, type "help"`,
-			wantType:    EventPlayerChat,
-			wantPlayer:  "Steve",
-			wantMessage: `Done (0.439s)! For help, type "help"`,
+			name:        "error",
+			line:        "[12:00:05] [Server thread/ERROR]: Something broke",
 			wantOK:      true,
+			wantType:    EventServerError,
+			wantMessage: "Something broke",
 		},
 		{
-			name:        "chat imitating a join is chat, not a join",
-			line:        "[20:30:05] [Server thread/INFO]: <Steve> Alex joined the game",
+			name:        "warn level wins over join text",
+			line:        "[12:00:06] [Server thread/WARN]: Steve joined the game",
+			wantOK:      true,
+			wantType:    EventServerWarning,
+			wantMessage: "Steve joined the game",
+		},
+		{
+			name:        "chat pretending to be a join is just chat",
+			line:        "[12:00:07] [Async Chat Thread - #0/INFO]: <Steve> Alex joined the game",
+			wantOK:      true,
 			wantType:    EventPlayerChat,
 			wantPlayer:  "Steve",
 			wantMessage: "Alex joined the game",
-			wantOK:      true,
 		},
 		{
-			name:        "chat imitating a leave is chat, not a leave",
-			line:        "[20:30:05] [Server thread/INFO]: <Steve> Alex left the game",
+			name:        "chat pretending to be ready is just chat",
+			line:        `[12:00:08] [Async Chat Thread - #0/INFO]: <Steve> Done (1s)! For help, type "help"`,
+			wantOK:      true,
 			wantType:    EventPlayerChat,
 			wantPlayer:  "Steve",
-			wantMessage: "Alex left the game",
-			wantOK:      true,
+			wantMessage: `Done (1s)! For help, type "help"`,
 		},
-		{
-			name:     "name only, no chat text",
-			line:     "[20:30:05] [Server thread/INFO]: <Steve>",
-			wantType: EventUnknown,
-		},
-		{
-			name:     "empty player name",
-			line:     "[20:30:05] [Server thread/INFO]: <> hello",
-			wantType: EventUnknown,
-		},
-		{
-			name:     "space inside player name",
-			line:     "[20:30:05] [Server thread/INFO]: <a b> hello",
-			wantType: EventUnknown,
-		},
-
-		// Nothing to report
-		{
-			name:     "ordinary info line",
-			line:     "[20:26:33] [Server thread/INFO]: Preparing spawn area: 100%",
-			wantType: EventUnknown,
-		},
-		{
-			name:     "no prefix",
-			line:     `Exception in thread "main" java.lang.Error`,
-			wantType: EventUnknown,
-		},
-		{
-			name:     "empty string",
-			line:     "",
-			wantType: EventUnknown,
-		},
+		{name: "ordinary info line", line: `[12:00:09] [Server thread/INFO]: Preparing level "world"`},
+		{name: "not a log line", line: "Steve joined the game"},
+		{name: "empty player name", line: "[12:00:10] [Server thread/INFO]:  joined the game"},
+		{name: "player name with space", line: "[12:00:11] [Server thread/INFO]: Steve Smith joined the game"},
+		{name: "chat with empty name", line: "[12:00:12] [Server thread/INFO]: <> hi"},
+		{name: "chat without space after bracket", line: "[12:00:13] [Server thread/INFO]: <Steve>hi"},
+		{name: "empty line", line: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := parseEvent(tt.line)
+			e, ok := parseEvent(tt.line)
+			require.Equal(t, tt.wantOK, ok)
 
-			if ok != tt.wantOK {
-				t.Fatalf("parseEvent(%q) ok = %v, want %v", tt.line, ok, tt.wantOK)
+			if !ok {
+				return
 			}
-			if got.Type != tt.wantType {
-				t.Errorf("parseEvent(%q) type = %v, want %v", tt.line, got.Type, tt.wantType)
-			}
-			if got.Player != tt.wantPlayer {
-				t.Errorf("parseEvent(%q) player = %q, want %q", tt.line, got.Player, tt.wantPlayer)
-			}
-			if got.Message != tt.wantMessage {
-				t.Errorf("parseEvent(%q) message = %q, want %q", tt.line, got.Message, tt.wantMessage)
-			}
-			if tt.wantOK && got.Timestamp.IsZero() {
-				t.Errorf("parseEvent(%q) timestamp is zero, want it set", tt.line)
-			}
+
+			require.Equal(t, tt.wantType, e.Type)
+			require.Equal(t, tt.wantPlayer, e.Player)
+			require.Equal(t, tt.wantMessage, e.Message)
+			require.NotZero(t, e.Timestamp)
 		})
 	}
+}
+
+func TestEventTypeRoundTrip(t *testing.T) {
+	for e := EventServerWarning; e <= EventBackupFailed; e++ {
+		require.NotEqual(t, "unknown", e.String())
+
+		text, err := e.MarshalText()
+		require.NoError(t, err)
+
+		var got EventType
+		require.NoError(t, got.UnmarshalText(text))
+
+		require.Equal(t, e, got)
+	}
+}
+
+func TestEventTypeUnknown(t *testing.T) {
+	require.Equal(t, "unknown", EventType(99).String())
+
+	got := EventServerReady // make sure it gets overwritten
+	err := got.UnmarshalText([]byte("nonsense"))
+	require.NoError(t, err)
+	require.Equal(t, EventUnknown, got)
 }

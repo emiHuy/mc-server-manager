@@ -221,7 +221,7 @@ paths:
   /api/server/metrics/stream:
     get:
       tags: [Streams]
-      summary: Live metrics (SSE)
+      summary: Recent samples, then live metrics (SSE)
       responses:
         "200":
           description: Metrics stream
@@ -278,49 +278,22 @@ paths:
 
   /api/backups/{id}/download:
     get:
-      tags: [backups]
-      operationId: downloadBackup
+      tags: [Backups]
       summary: Download a backup
-      description: >
-        Streams the backup's zip file as an attachment. Supports HTTP range
-        requests, so interrupted downloads can resume.
+      description: Streams the backup's zip file as an attachment. Supports range requests, so interrupted downloads can resume.
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Backup ID.
-          schema:
-            type: string
+        - $ref: "#/components/parameters/BackupId"
       responses:
         "200":
-          description: The backup zip file.
-          headers:
-            Content-Disposition:
-              description: Suggested filename, e.g. `attachment; filename="abc123.zip"`.
-              schema:
-                type: string
-            Content-Length:
-              schema:
-                type: integer
-            Last-Modified:
-              schema:
-                type: string
-            Accept-Ranges:
-              schema:
-                type: string
-                example: bytes
+          description: The backup zip file
           content:
             application/zip:
-              schema:
-                type: string
-                format: binary
+              schema: { type: string, format: binary }
         "206":
-          description: Partial content, returned when a `Range` header is sent.
+          description: Partial content, returned when a `Range` header is sent
           content:
             application/zip:
-              schema:
-                type: string
-                format: binary
+              schema: { type: string, format: binary }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -488,6 +461,13 @@ components:
         id: { type: string }
         created_at: { type: string, format: date-time }
         size_bytes: { type: integer, format: int64 }
+
+    BackupId:
+      name: id
+      in: path
+      required: true
+      description: Backup ID, such as backup-20261112-153000
+      schema: { type: string, pattern: '^backup-\d{8}-\d{6}$' }
 
     BackupList:
       type: object
