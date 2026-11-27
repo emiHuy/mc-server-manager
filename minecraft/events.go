@@ -9,6 +9,7 @@ import (
 type EventType int
 
 // Event describes something that happened on the server.
+//
 // Which fields are set depends on Type.
 type Event struct {
 	Type      EventType
@@ -103,7 +104,6 @@ func parseEvent(line string) (Event, bool) {
 	return Event{}, false
 }
 
-// parseLine splits a console line like "[12:00:00] [Server thread/INFO]: text" into its level ("INFO") and message ("text").
 func parseLine(line string) (level, message string, ok bool) {
 	if !strings.HasPrefix(line, "[") {
 		return "", "", false

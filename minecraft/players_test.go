@@ -2,10 +2,11 @@ package minecraft
 
 import (
 	"fmt"
-	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPlayerSet(t *testing.T) {
@@ -96,11 +97,7 @@ func TestPlayerSet(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ps := newPlayerSet()
 			tt.ops(ps)
-
-			got := ps.list()
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("list() = %v, want %v", got, tt.want)
-			}
+			require.Equal(t, tt.want, ps.list())
 		})
 	}
 }
@@ -111,15 +108,11 @@ func TestPlayerSetListReturnsCopy(t *testing.T) {
 	ps.add("Alex")
 
 	got := ps.list()
-	if len(got) != 2 {
-		t.Fatalf("list() returned %d players, want 2", len(got))
-	}
+	require.Len(t, got, 2)
 	got[0] = "changed"
 
 	want := []string{"Alex", "Steve"}
-	if again := ps.list(); !slices.Equal(again, want) {
-		t.Errorf("list() after modifying a previous result = %v, want %v", again, want)
-	}
+	require.Equal(t, want, ps.list())
 }
 
 // TestPlayerSetConcurrent is mainly useful with: go test -race ./minecraft/
@@ -131,7 +124,7 @@ func TestPlayerSetConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				name := fmt.Sprintf("player-%d-%d", g, i%5)
 				ps.add(name)
 				ps.list()

@@ -6,9 +6,10 @@ import (
 )
 
 // playerSet stores the names of online players.
+//
 // It is safe for concurrent use.
 type playerSet struct {
-	mu      sync.Mutex // guards players
+	mu      sync.Mutex
 	players map[string]struct{}
 }
 

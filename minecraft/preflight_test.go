@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestServerAddrFromProperties(t *testing.T) {
@@ -36,24 +38,20 @@ func TestServerAddrFromProperties(t *testing.T) {
 			dir := t.TempDir()
 			if tt.contents != nil {
 				path := filepath.Join(dir, "server.properties")
-				if err := os.WriteFile(path, []byte(*tt.contents), 0o644); err != nil {
-					t.Fatal(err)
-				}
+				err := os.WriteFile(path, []byte(*tt.contents), 0o644)
+				require.NoError(t, err)
 			}
 
 			host, port, err := serverAddrFromProperties(dir)
+
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("serverAddrFromProperties() = (%q, %d, nil), want error", host, port)
-				}
+				require.Error(t, err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("serverAddrFromProperties() error: %v", err)
-			}
-			if host != tt.wantHost || port != tt.wantPort {
-				t.Errorf("serverAddrFromProperties() = (%q, %d), want (%q, %d)", host, port, tt.wantHost, tt.wantPort)
-			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.wantHost, host)
+			require.Equal(t, tt.wantPort, port)
 		})
 	}
 }
