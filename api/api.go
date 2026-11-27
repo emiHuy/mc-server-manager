@@ -57,12 +57,12 @@ func WithNextBackup(n nextBackupper) Option {
 	return func(s *Server) { s.nextBackup = n }
 }
 
-func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecraft.Restarter, backups backupService, opts ...Option) *Server {
+func New(cfg config.APIConfig, instance *minecraft.Instance, restarter *minecraft.Restarter, backups backupService, opts ...Option) *Server {
 	s := Server{
 		instance:  instance,
 		restarter: restarter,
 		backups:   backups,
-		token:     conf.Token,
+		token:     cfg.Token,
 	}
 
 	for _, opt := range opts {
@@ -72,7 +72,7 @@ func New(conf config.APIConfig, instance *minecraft.Instance, restarter *minecra
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s.httpServer = &http.Server{
-		Addr:              net.JoinHostPort(conf.Host, strconv.Itoa(conf.Port)),
+		Addr:              net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
 		Handler:           s.auth(s.routes()),
 		ReadHeaderTimeout: readHeaderTimeout,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
