@@ -37,6 +37,9 @@ flowchart LR
 
     classDef external stroke-dasharray: 4 3
     class Java external
+
+    style clients fill:none,stroke:#8b949e,stroke-dasharray: 4 4
+    style manager fill:none,stroke:#8b949e,stroke-dasharray: 4 4
 ```
 
 ## Packages
