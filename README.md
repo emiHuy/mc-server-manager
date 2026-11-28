@@ -1,19 +1,21 @@
 # mc-server-manager
 
-A lightweight manager for a self-hosted Minecraft server. Runs on the host machine and enables remote administration through a web dashboard, CLI, and HTTP API.
+Running a self-hosted Minecraft server often means juggling a terminal, SSH session, or remote desktop just to check status, restart the server, watch logs, or create backups.
 
-![Dashboard](docs/dashboard.png)
+mc-server-manager is a lightweight manager for a self-hosted Minecraft server. It runs the server, tracks its state, console, players, and resource use, and makes them available through a web dashboard, a CLI, and an HTTP API. It is designed to sit alongside a single server on a trusted machine.
+
+![mc-server-manager dashboard](screenshots/web-dashboard.png)
 
 ## Features
 
-- Control server lifecycle (start, stop, kill)
-- Live console and command sending
-- Player tracking and events (joins, leaves, chat, warnings, errors)
-- CPU, memory, and disk metrics
-- Web dashboard, CLI (`mcsm`), and API
+- Start, stop, and kill the server
+- Live console and commands
+- Player tracking, events, and CPU / memory / disk metrics
 - Automatic restart after crashes
-- Manual backups with retention (scheduled backups are planned)
-- Bearer-token authentication (required when listening beyond localhost)
+- World backups with retention, manual or scheduled
+- Web dashboard, CLI (`mcsm`), and HTTP API
+- Token authentication
+- Remote server management through Tailscale
 
 ## Requirements
 
@@ -21,78 +23,52 @@ A lightweight manager for a self-hosted Minecraft server. Runs on the host machi
 - Java, and a Minecraft server jar with its EULA accepted
 - Windows or Linux
 
-## Build and run
+## Quick Start
 
-```
-go build
-./mc-server-manager
-```
-Then open the dashboard at <http://127.0.0.1:8080/dashboard> (the default address; see `api.host` and `api.port` below). Press Ctrl+C to stop: the manager asks the server to save and exit, and a second Ctrl+C kills it.
+1. Build the manager and the CLI:
+   ```
+   go build
+   go build -o mcsm ./cmd/mcsm
+   ```
+2. Copy `config/config.example.toml` to `config/config.toml` and set at least the required fields. See [Configuration](docs/configuration.md) for more details.
+3. Run it from the project's root folder:
+   ```
+   ./mc-server-manager
+   ```
+4. Manage the server through the dashboard, the CLI, or the HTTP API. See [Usage](#usage) below.
 
-To build the CLI:
-```
-go build -o mcsm ./cmd/mcsm
-```
+Press Ctrl+C to stop. The manager asks the server to save and exit. A second Ctrl+C kills it.
 
-## Configuration
+## Usage
 
-Copy `config/config.example.toml` to `config/config.toml` and edit it.
+The manager serves everything on the address set by `api.host` and `api.port` in your config. There are three ways to use it:
 
-| Key | Notes |
-|---|---|
-| `minecraft.*` | Server directory, jar, and memory settings. |
-| `minecraft.autostart` | Start the server when the manager starts. |
-| `auto_restart.*` | Restart the server after a crash. Off by default. |
-| `api.host`, `api.port` | Default `127.0.0.1:8080`. Set api.host = "tailscale" to automatically bind to your Tailscale IP, or 0.0.0.0 for all interfaces. |
-| `api.token` |  At least 16 characters. Required unless `api.host` is a loopback address. You can generate one with `./mc-server-manager token`. |
-| `backup.*` | Backup creation and storage. |
+- **Dashboard:** a web UI for status, console, players, and controls. Open `/dashboard` on the manager's address in a browser.
+- **CLI (`mcsm`):** control the server from a terminal. Run `mcsm help` for all commands. Point it at the manager with `--addr` or the `MCSM_ADDR` environment variable, and give it your token with `MCSM_TOKEN`. See [CLI](docs/cli.md) for more details.
+- **HTTP API:** for scripts and other tools. Interactive docs are at `/docs` on the manager's address.
 
-## CLI
+## Remote access
 
-```
-  mcsm status
-  mcsm start --wait
-  mcsm command say hello
-  mcsm logs -f
-  mcsm auto-restart true
-```
-Run `mcsm help` for all commands. Set `MCSM_TOKEN` if the manager requires a token, and `MCSM_ADDR` if it isn't at the default `http://127.0.0.1:8080`.
+To reach the manager from another device, set `api.host` to `"tailscale"` (or `"0.0.0.0"`) in your config.
 
-## API
+A token is **required** for any host other than loopback, so set an `api.token` too. Generate one with `./mc-server-manager token`, and give it to the CLI through `MCSM_TOKEN`.
 
-Interactive docs are served at `/docs`. With a token set, send `Authorization: Bearer <token>`.
+The API is plain HTTP, so a token can be seen by anyone sniffing the network. Only expose the manager on networks you trust.
 
-## Server states
+## Releases
 
-```
-stopped -> starting -> running -> stopping -> stopped
-                |          |          |
-                +----------+----------+--> crashed
-```
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
-`starting` lasts until the console prints its "Done" line.
-With `auto_restart` enabled, a crashed server is restarted after a delay that doubles each time, up to 5 minutes, and the manager gives up after `max_restarts` crashes in a row. A server you stop yourself is never restarted. `mcsm auto-restart true|false` changes the setting until the manager restarts.
+## Documentation
 
-## Known limitations
+- [Architecture](docs/ARCHITECTURE.md)
+- [CLI](docs/cli.md)
+- [Configuration](docs/configuration.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Changelog](CHANGELOG.md)
 
-- The API is plain HTTP, so the token is visible to anyone sniffing the network. Only expose it on a network you trust, such as a VPN.
-- A slow stream client can miss messages. Re-fetch `/api/server/status` after reconnecting.
-- Readiness detection expects vanilla's "Done" line.
-- A backup waits for vanilla's "Saved the game" line. If it never appears, the backup fails after `backup.flush_timeout` and autosaving is turned back on.
-- Backups live on the same machine, and on the same disk unless `backup.directory` points elsewhere, so copy them off the machine if you want protection from disk failure.
-- Backup settings, including `backup.interval`, are read once at startup. Changing them means editing `config.toml` and restarting the manager.
-- Scheduled backups run on a fixed interval, not at set times of day, and an interval's backup is skipped when the world hasn't changed since the last one.
-- Shutting down waits for a backup that is already writing its archive, so stopping the manager can take longer on a large world.
 
-## Development
+## Possible Future Additions
 
-```
-go test ./...
-go vet ./...
-```
-
-## TODO
-
-- Optional TLS
-- Server properties + config editor
-- ESP32 server monitoring
+- TLS support
+- `server.properties` editing
