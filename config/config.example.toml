@@ -1,11 +1,9 @@
+# Copy to config/config.toml. Full reference: docs/configuration.md
+
 [api]
-# Host address to bind the API and web dashboard to.
-# - Use "127.0.0.1" for localhost only.
-# - Use "0.0.0.0" for all network interfaces.
-# - Use "tailscale" to automatically discover and bind to your Tailscale IP.
-host = "127.0.0.1"
+host = "127.0.0.1" # "127.0.0.1", "0.0.0.0", or "tailscale"
 port = 8080
-token = "<generated_token>" # optional
+token = "<generated_token>" # required unless host is loopback; run: ./mc-server-manager token
 
 [minecraft]
 # Windows paths: use single quotes so backslashes are not treated as escapes.
@@ -16,21 +14,21 @@ jar_file = "server.jar"
 min_memory = "4G"
 max_memory = "4G"
 gui = false
-stop_timeout = "30s" # needs a unit (s, m); minimum 1s
-startup_timeout = "2m"
+stop_timeout = "30s"   # needs a unit (s, m); minimum 1s
+startup_timeout = "2m" # needs a unit (s, m); minimum 5s
 autostart = true
 
 [auto_restart]
 enabled = true
 max_restarts = 5
-initial_backoff = "5s"
+initial_backoff = "5s" # needs a unit (s, m); minimum 1s
 
 [backup]
-directory = "backups" # where backups are written
-keep = 7              # how many newest backups to retain
+directory = "backups"
+keep = 7              # newest backups to retain
 world = "world"       # world folder inside minecraft.directory
 flush_timeout = "30s" # max wait for "Saved the game"
-interval = "24h"      # optional: back up automatically this often; omit or 0 to turn off
+interval = "24h"      # omit or 0 to turn off automatic backups
 
 [options]
-log_level = "debug"
+log_level = "info" # debug, info, warn, error
