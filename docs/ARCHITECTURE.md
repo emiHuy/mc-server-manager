@@ -17,8 +17,6 @@ flowchart LR
     subgraph manager["mc-server-manager"]
         API["API<br/>(HTTP + SSE)"]
 
-        Backup["backup"]
-
         Inst["minecraft.Instance<br/>(state, console, players)"]
         Hubs["fanout hubs<br/>(console, events, metrics)"]
         Sys["sysmetrics<br/>(CPU, memory, disk)"]
